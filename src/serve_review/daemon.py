@@ -560,3 +560,13 @@ def run_daemon(host: str, port: int) -> None:
     config = uvicorn.Config(server.app, host=host, port=port, log_level="warning")
     uvi = uvicorn.Server(config)
     asyncio.run(uvi.serve())
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m serve_review.daemon")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8567)
+    args = parser.parse_args()
+    run_daemon(host=args.host, port=args.port)

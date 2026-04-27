@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+import contextlib
+import os
+import socket
+from typing import TYPE_CHECKING
 
+import pytest
+import uvicorn
+
+from serve_review import cache
+from serve_review.daemon import DaemonServer
 from serve_review.models import (
     AttentionFlag,
     AttentionKind,
@@ -14,6 +23,9 @@ from serve_review.models import (
     PushInfo,
     ReviewRequest,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @pytest.fixture
@@ -110,3 +122,45 @@ def sample_review(sample_push_info: PushInfo) -> ReviewRequest:
         ],
         has_attention_flags=True,
     )
+
+
+def _free_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+@pytest.fixture
+async def live_daemon() -> AsyncIterator[tuple[DaemonServer, int]]:
+    """Run a real uvicorn server in-process. Yields (server, port).
+
+    The client speaks HTTP over a real loopback socket, so an ASGI transport
+    won't do; we need a port the urllib client can connect to.
+    """
+    port = _free_port()
+    server = DaemonServer(host="127.0.0.1", port=port)
+    config = uvicorn.Config(server.app, host="127.0.0.1", port=port, log_level="error")
+    uvi = uvicorn.Server(config)
+    serve_task = asyncio.create_task(uvi.serve())
+
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while not uvi.started:
+        if asyncio.get_event_loop().time() > deadline:
+            raise RuntimeError("uvicorn failed to start")
+        await asyncio.sleep(0.01)
+
+    # Mirror the real daemon's lifecycle: write a PID file so daemon_is_running
+    # can find us. Use the test process's own PID, which is guaranteed alive
+    # for the test duration and works in containers without an init at PID 1.
+    cache.write_pid_file(port, os.getpid())
+
+    try:
+        yield server, port
+    finally:
+        cache.remove_pid_file(port)
+        uvi.should_exit = True
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(serve_task, timeout=5.0)
