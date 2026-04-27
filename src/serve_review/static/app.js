@@ -2,10 +2,17 @@
     'use strict';
 
     // --- State ---
-    let reviewData = null;
-    const comments = new Map(); // key: "filepath:line" -> {body, file, line}
-    let activeCommentForm = null; // {file, line, row} of currently open form
-    let selectedCommitSha = null; // when set, diff is filtered to this commit's files
+    let mode = 'unknown';                // 'daemon' | 'standalone' | 'unknown'
+    let reviews = new Map();             // id -> { summary, fullData }
+    let activeReviewId = null;           // null when no review is active
+    let eventSource = null;
+    let commentsByReview = new Map();    // reviewId -> Map(key -> comment)
+    let overallByReview = new Map();     // reviewId -> string
+
+    let reviewData = null;               // active review's full data (read by render fns)
+    let comments = new Map();            // active review's comments (read by render fns)
+    let activeCommentForm = null;        // {file, line, row} of currently open form
+    let selectedCommitSha = null;        // when set, diff is filtered to this commit's files
 
     // --- Helpers ---
 
@@ -83,14 +90,23 @@
         app.appendChild(layout);
         app.appendChild(renderActionBar());
 
-        // Measure header and set CSS variable for sticky file headers
+        if (mode === 'daemon') {
+            renderTabBar();
+        }
+
+        // Measure sticky elements and set CSS variable for sticky file
+        // headers. Only count what stays in the viewport when scrolled: the
+        // tab bar (sticky, top: 0) and the review header (sticky, top:
+        // var(--tab-bar-h)). The attention banner is intentionally NOT
+        // sticky, so leaving room for it would leave a gap once scrolled
+        // past.
         requestAnimationFrame(function () {
+            var tabBar = document.getElementById('tab-bar');
+            var tabBarH = tabBar ? tabBar.offsetHeight : 0;
+            document.documentElement.style.setProperty('--tab-bar-h', tabBarH + 'px');
             var hdr = document.getElementById('review-header');
             if (hdr) {
-                var h = hdr.offsetHeight;
-                // Also account for attention banner if present
-                var banner = document.getElementById('attention-banner');
-                if (banner) h += banner.offsetHeight;
+                var h = hdr.offsetHeight + tabBarH;
                 document.documentElement.style.setProperty('--header-h', h + 'px');
             }
         });
@@ -519,7 +535,7 @@
         contentTd.className = 'line-content';
 
         if (hasFlags) {
-            contentTd.innerHTML = renderFlaggedContent(line.content, line.flags);
+            contentTd.innerHTML = renderFlaggedContent(line.content, line.flags, file.language);
         } else {
             contentTd.innerHTML = highlightCode(line.content, file.language);
         }
@@ -535,8 +551,8 @@
         return tr;
     }
 
-    function renderFlaggedContent(content, flags) {
-        if (!flags || flags.length === 0) return esc(content);
+    function renderFlaggedContent(content, flags, language) {
+        if (!flags || flags.length === 0) return highlightCode(content, language);
 
         const sorted = [...flags].sort((a, b) => a.start - b.start);
         let result = '';
@@ -547,13 +563,16 @@
             const end = flag.end;
             if (start >= end) continue;
 
-            result += esc(content.slice(pos, start));
+            // Prism-highlight the unflagged segment before the flag.
+            result += highlightCode(content.slice(pos, start), language);
+            // The flagged segment stays plain (amber background draws the
+            // eye; syntax colour inside would compete with the highlight).
             result += '<mark class="attention-flag" data-kind="' + esc(flag.kind) + '">';
             result += esc(content.slice(start, end));
             result += '</mark>';
             pos = end;
         }
-        result += esc(content.slice(pos));
+        result += highlightCode(content.slice(pos), language);
         return result;
     }
 
@@ -826,41 +845,24 @@
             if (commit) commitFiles = new Set(commit.files);
         }
 
-        // Filter file diffs
+        // git_ops produces both diff paths (via _strip_diff_prefix) and
+        // commit file lists (via git log --name-only) without a/b prefixes,
+        // so a single membership check is sufficient.
         document.querySelectorAll('.file-diff').forEach(function (el) {
             if (!commitFiles) {
                 el.classList.remove('filtered-out');
             } else {
-                var filePath = el.dataset.file;
-                // Match against both the full path and without a/ b/ prefixes
-                var match = commitFiles.has(filePath) ||
-                    commitFiles.has('a/' + filePath) ||
-                    commitFiles.has('b/' + filePath);
-                // Also try stripping a/ b/ from the commit file list
-                if (!match) {
-                    commitFiles.forEach(function (cf) {
-                        if (cf.replace(/^[ab]\//, '') === filePath) match = true;
-                    });
-                }
-                el.classList.toggle('filtered-out', !match);
+                el.classList.toggle('filtered-out', !commitFiles.has(el.dataset.file));
             }
         });
 
-        // Also filter file nav items
         document.querySelectorAll('.file-nav-item').forEach(function (item) {
             if (!commitFiles) {
                 item.classList.remove('filtered-out');
             } else {
                 var nameEl = item.querySelector('.file-nav-name span');
                 if (nameEl) {
-                    var name = nameEl.textContent;
-                    var match = commitFiles.has(name);
-                    if (!match) {
-                        commitFiles.forEach(function (cf) {
-                            if (cf.replace(/^[ab]\//, '') === name) match = true;
-                        });
-                    }
-                    item.classList.toggle('filtered-out', !match);
+                    item.classList.toggle('filtered-out', !commitFiles.has(nameEl.textContent));
                 }
             }
         });
@@ -882,18 +884,35 @@
 
     // --- Actions ---
 
+    function approveUrl() {
+        return mode === 'daemon'
+            ? '/api/queue/' + activeReviewId + '/approve'
+            : '/api/review/approve';
+    }
+
+    function denyUrl() {
+        return mode === 'daemon'
+            ? '/api/queue/' + activeReviewId + '/deny'
+            : '/api/review/deny';
+    }
+
     async function handleApprove() {
         const overall = document.getElementById('overall-comment');
         const overallComment = overall ? overall.value.trim() : '';
 
         try {
-            const res = await fetch('/api/review/approve', {
+            const res = await fetch(approveUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ overall_comment: overallComment }),
             });
             if (res.ok) {
-                showSubmitted('approved');
+                if (mode === 'standalone') {
+                    showSubmitted('approved');
+                }
+                // In daemon mode, the SSE review_decided event handler triggers
+                // the tab styling. The user's view stays put; the tab fades and
+                // is removed by SSE events.
             } else {
                 const data = await res.json();
                 alert('Error: ' + (data.error || 'Unknown error'));
@@ -925,7 +944,7 @@
         }
 
         try {
-            const res = await fetch('/api/review/deny', {
+            const res = await fetch(denyUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -934,7 +953,11 @@
                 }),
             });
             if (res.ok) {
-                showSubmitted('denied');
+                if (mode === 'standalone') {
+                    showSubmitted('denied');
+                }
+                // In daemon mode, the SSE review_decided event handler triggers
+                // the tab styling.
             } else {
                 const data = await res.json();
                 alert('Error: ' + (data.error || 'Unknown error'));
@@ -988,20 +1011,200 @@
         }
     }
 
+    // --- Tab bar ---
+
+    function renderTabBar() {
+        let bar = document.getElementById('tab-bar');
+        if (mode !== 'daemon') {
+            if (bar) bar.remove();
+            return;
+        }
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'tab-bar';
+            document.body.insertBefore(bar, document.getElementById('app'));
+        }
+        bar.innerHTML = '';
+        // Sort by submitted_at ascending so order is stable
+        const sorted = Array.from(reviews.values()).sort(
+            (a, b) => a.summary.submitted_at - b.summary.submitted_at
+        );
+        for (const review of sorted) {
+            const tab = document.createElement('button');
+            tab.className = 'review-tab';
+            if (review.summary.id === activeReviewId) tab.classList.add('active');
+            if (review.summary.status === 'decided') {
+                tab.classList.add('decided');
+                // Differentiate approve vs deny so the tab flashes the
+                // matching colour during the 3s fade. The decision dict is
+                // stashed on the summary by the review_decided SSE handler.
+                const verdict = review.summary.decision &&
+                    review.summary.decision.decision;
+                if (verdict === 'deny') tab.classList.add('decided-deny');
+                else tab.classList.add('decided-approve');
+            }
+            if (review.summary.status === 'orphaned') tab.classList.add('orphaned');
+            const branch = review.summary.branch;
+            const fileCount = review.summary.files_count;
+            tab.textContent = branch + ' (' + fileCount + ')';
+            tab.dataset.reviewId = review.summary.id;
+            tab.addEventListener('click', () => switchTab(review.summary.id));
+            bar.appendChild(tab);
+        }
+    }
+
+    async function switchTab(reviewId) {
+        // Save the outgoing tab's comments and overall-text into per-review state
+        if (activeReviewId !== null) {
+            commentsByReview.set(activeReviewId, comments);
+            const overallEl = document.getElementById('overall-comment');
+            if (overallEl) overallByReview.set(activeReviewId, overallEl.value);
+        }
+
+        activeReviewId = reviewId;
+        const review = reviews.get(reviewId);
+        if (!review) {
+            renderEmptyState();
+            return;
+        }
+        if (!review.fullData) {
+            const resp = await fetch('/api/queue/' + reviewId);
+            if (!resp.ok) {
+                // Review was reaped between summary and tab click
+                reviews.delete(reviewId);
+                activeReviewId = null;
+                renderTabBar();
+                const next = reviews.keys().next().value;
+                if (next) {
+                    await switchTab(next);
+                } else {
+                    renderEmptyState();
+                }
+                return;
+            }
+            review.fullData = await resp.json();
+        }
+        reviewData = review.fullData;
+        comments = commentsByReview.get(reviewId) || new Map();
+        render();
+        // Restore the overall-comment textarea after render
+        const overallEl = document.getElementById('overall-comment');
+        if (overallEl) overallEl.value = overallByReview.get(reviewId) || '';
+    }
+
+    function renderEmptyState() {
+        const app = document.getElementById('app');
+        app.innerHTML = '';
+        if (mode === 'daemon') renderTabBar();
+        const empty = document.createElement('div');
+        empty.id = 'empty-state';
+        empty.textContent = 'Waiting for reviews...';
+        app.appendChild(empty);
+    }
+
+    // --- SSE ---
+
+    function connectSSE() {
+        if (eventSource) return;
+        eventSource = new EventSource('/api/events');
+
+        eventSource.addEventListener('review_added', async function (e) {
+            const data = JSON.parse(e.data);
+            reviews.set(data.id, { summary: data.summary, fullData: null });
+            renderTabBar();
+            // If nothing is active, switch to the new one
+            if (activeReviewId === null) {
+                await switchTab(data.id);
+            }
+        });
+
+        eventSource.addEventListener('review_decided', function (e) {
+            const data = JSON.parse(e.data);
+            const review = reviews.get(data.id);
+            if (review) {
+                review.summary.status = 'decided';
+                review.summary.decision = data.decision;
+                renderTabBar();
+            }
+        });
+
+        eventSource.addEventListener('review_orphaned', function (e) {
+            const data = JSON.parse(e.data);
+            const review = reviews.get(data.id);
+            if (review) {
+                review.summary.status = 'orphaned';
+                renderTabBar();
+            }
+        });
+
+        eventSource.addEventListener('review_removed', function (e) {
+            const data = JSON.parse(e.data);
+            const wasActive = data.id === activeReviewId;
+            reviews.delete(data.id);
+            commentsByReview.delete(data.id);
+            overallByReview.delete(data.id);
+            if (wasActive) {
+                activeReviewId = null;
+                const next = reviews.keys().next().value;
+                if (next) {
+                    switchTab(next);
+                } else {
+                    renderEmptyState();
+                }
+            } else {
+                renderTabBar();
+            }
+        });
+
+        eventSource.onerror = function () {
+            // Auto-reconnects by default; if it gives up, recreate after backoff.
+            if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+                eventSource = null;
+                setTimeout(connectSSE, 3000);
+            }
+        };
+    }
+
     // --- Init ---
 
     async function init() {
         try {
+            const queueResp = await fetch('/api/queue');
+            if (queueResp.ok) {
+                mode = 'daemon';
+                const summaries = await queueResp.json();
+                for (const s of summaries) {
+                    reviews.set(s.id, { summary: s, fullData: null });
+                }
+                connectSSE();
+                if (summaries.length > 0) {
+                    await switchTab(summaries[0].id);
+                } else {
+                    renderEmptyState();
+                }
+            } else {
+                await initStandalone();
+            }
+        } catch (err) {
+            // Network error: try standalone fallback
+            await initStandalone();
+        }
+        registerSW();
+    }
+
+    async function initStandalone() {
+        mode = 'standalone';
+        try {
             const res = await fetch('/api/review');
             if (!res.ok) throw new Error('HTTP ' + res.status);
             reviewData = await res.json();
+            comments = new Map();
             render();
         } catch (err) {
             document.getElementById('app').innerHTML =
                 '<div id="loading"><div class="loading-text">Failed to load review data: ' +
                 esc(err.message) + '</div></div>';
         }
-        registerSW();
     }
 
     if (document.readyState === 'loading') {

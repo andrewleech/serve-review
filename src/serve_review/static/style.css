@@ -42,6 +42,7 @@
     --radius-lg: 8px;
     --action-bar-h: 64px;
     --header-h: 0px; /* set by JS after render */
+    --tab-bar-h: 0px; /* set by JS after render in daemon mode */
 }
 
 *, *::before, *::after {
@@ -142,7 +143,7 @@ body {
 
 #review-header {
     position: sticky;
-    top: 0;
+    top: var(--tab-bar-h, 0px);
     z-index: 20;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
@@ -272,18 +273,17 @@ body {
     transform: rotate(90deg);
 }
 
+/* Plain display toggle (no animated grid-template-rows interpolation): a
+   smooth height transition has to relayout the section content every frame,
+   which becomes O(n^2)-ish in some browsers when the section holds a long
+   commit / file list. The 65-commit review case locked Chrome up for
+   minutes. Snap-toggle is cheap and predictable. */
 .section-body-wrap {
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows 0.25s ease;
+    display: none;
 }
 
 .section.open > .section-body-wrap {
-    grid-template-rows: 1fr;
-}
-
-.section-body {
-    overflow: hidden;
+    display: block;
 }
 
 /* --- Commits --- */
@@ -452,6 +452,14 @@ body {
 
 .file-diff {
     border-bottom: 1px solid var(--border-strong);
+    /* Skip layout, style, and paint for file diffs not currently in the
+       viewport. Critical when reviewing a 65-commit branch with thousands
+       of Prism-highlighted spans: without this the browser keeps the
+       entire diff laid out and re-paints it on every scroll/collapse,
+       which on a slow machine causes seconds of compositor stutter after
+       any DOM change. The intrinsic-size hint keeps scrollbars stable. */
+    content-visibility: auto;
+    contain-intrinsic-size: 0 800px;
 }
 
 .file-header {
@@ -532,18 +540,15 @@ body {
 .file-stats .add { color: var(--green-bright); }
 .file-stats .del { color: var(--red-bright); }
 
+/* Plain display toggle for the same reason as .section-body-wrap above:
+   a 65-commit review with thousands of diff lines turned the smooth
+   collapse animation into a multi-minute browser stall. */
 .file-body-wrap {
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows 0.25s ease;
+    display: none;
 }
 
 .file-diff.open > .file-body-wrap {
-    grid-template-rows: 1fr;
-}
-
-.file-body {
-    overflow: hidden;
+    display: block;
 }
 
 .file-body-inner {
@@ -651,12 +656,34 @@ mark.attention-flag {
 
 /* --- Inline comments --- */
 
+/* The comment form lives inside the diff table, which can be much wider
+   than the viewport on long-line files. Without sticky positioning, the
+   textarea and Save/Cancel buttons inherit that overflow and the user has
+   to scroll horizontally to use them. Sticky-pinning the form to the left
+   edge of the scroll container, with width matched to the visible main
+   content area, keeps the form on-screen regardless of where the parent
+   table is scrolled. */
 .comment-form-row td {
-    padding: 8px 16px;
+    padding: 0;
     background: var(--bg-surface);
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     white-space: normal;
+}
+
+.comment-form {
+    position: sticky;
+    left: 0;
+    width: 100vw;
+    box-sizing: border-box;
+    padding: 8px 16px;
+}
+
+@media (min-width: 900px) {
+    .comment-form {
+        /* Sidebar takes 260px on desktop; main content is the rest. */
+        width: calc(100vw - 260px);
+    }
 }
 
 .comment-form textarea {
@@ -983,4 +1010,83 @@ mark.attention-flag {
     overflow: hidden;
     clip: rect(0,0,0,0);
     border: 0;
+}
+
+/* --- Tab bar (daemon mode only) --- */
+
+#tab-bar {
+    display: flex;
+    gap: 0;
+    background: var(--bg-root);
+    border-bottom: 1px solid var(--border-strong);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+}
+
+.review-tab {
+    padding: 10px 16px;
+    background: var(--bg-surface);
+    border: none;
+    border-right: 1px solid var(--border);
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    white-space: nowrap;
+    min-height: 36px;
+    transition: background 0.15s, border-color 0.15s, opacity 0.5s;
+}
+
+.review-tab:hover {
+    background: var(--bg-hover);
+}
+
+.review-tab.active {
+    background: var(--bg-elevated);
+    border-bottom-color: var(--amber);
+    color: var(--text-primary);
+}
+
+/* The 3s fade matches the daemon's _schedule_reap delay (also 3s). If
+   either changes, update the other; otherwise the tab will pop instead
+   of fading. See ReviewQueue._schedule_reap in src/serve_review/daemon.py. */
+.review-tab.decided {
+    opacity: 0.8;
+    animation: tabFade 3s ease-out forwards;
+}
+
+.review-tab.decided-approve {
+    border-bottom-color: var(--green);
+    color: var(--green-bright);
+}
+
+.review-tab.decided-deny {
+    border-bottom-color: var(--red);
+    color: var(--red-bright);
+}
+
+.review-tab.orphaned {
+    opacity: 0.4;
+    font-style: italic;
+}
+
+@keyframes tabFade {
+    0%   { opacity: 0.8; }
+    66%  { opacity: 0.8; }
+    100% { opacity: 0; }
+}
+
+/* Empty state */
+#empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60dvh;
+    color: var(--text-muted);
+    font-size: var(--font-size-base);
+    animation: pulse 2s ease-in-out infinite;
 }
