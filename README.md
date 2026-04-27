@@ -1,6 +1,6 @@
 # serve-review
 
-Pre-push review gate that blocks `git push` until a human approves the diff in a web UI.
+A pre-push hook that pauses `git push` so the developer can review the change in a web UI, then approve, or deny with targeted feedback. When the push was initiated by an AI agent, the denial feedback is returned as structured JSON the agent reads automatically and acts on.
 
 ## Why this exists
 
@@ -12,13 +12,47 @@ Particularly useful for the "iterate and force-push" workflow on existing PRs, w
 
 ## How it works
 
-1. You (or your AI agent) run `git push`
-2. The pre-push hook starts serve-review on port 8567 (by default)
-3. You open the URL on your phone (bookmarkable, installable as a PWA)
-4. Review the diff, tap **Approve** or **Request Changes**
-5. Approve: push proceeds. Deny: comments are returned as structured JSON so the agent can act on them
+1. You (or your AI agent) run `git push`.
 
-The push is blocked until you make a decision.
+2. The pre-push hook submits the diff to the serve-review daemon (auto-spawned the first time) and prints the review URL. The push is paused on this line until a decision arrives:
+
+   <img src="assets/cli-banner.jpg" alt="Terminal output of a paused git push showing the review URL" width="800">
+
+3. You open the URL on any device on your network: phone, tablet, laptop. The page is bookmarkable and installable as a PWA. When multiple repos push concurrently, each review is its own tab:
+
+   <img src="assets/mobile-overview.png" alt="Mobile review UI: tab bar with two concurrent reviews, file diff with collapse controls" width="320">
+
+4. Read the diff, tap a line to leave a comment, then **Approve** or **Request Changes**:
+
+   <img src="assets/mobile-comment.png" alt="Composing an inline line comment in the mobile review UI" width="320">
+
+5. Approve: the push proceeds. Deny: the push is blocked, your line comments and overall message are returned as structured JSON. An AI agent that initiated the push reads that JSON directly and acts on each comment without further prompting.
+
+The daemon stays running in the background, so multiple repos can submit reviews simultaneously and you'll see them as separate tabs in the UI. Approved decisions are cached for 48 hours: if you re-push the same diff content (e.g. after a rebase that doesn't change any lines), the result is replayed instantly without re-prompting.
+
+## The daemon
+
+```bash
+# Show running daemons (port, pid, queue depth, URL)
+serve-review daemon status
+
+# Stop a daemon (defaults to port 8567)
+serve-review daemon stop
+serve-review daemon stop --port 9000
+serve-review daemon stop --all
+
+# Start in foreground (mostly for debugging)
+serve-review daemon start
+```
+
+State lives in `~/.cache/serve-review/`:
+- `daemon-{port}.pid` — one per running daemon
+- `decisions/{hash}.json` — cached approve/deny decisions, swept after 48h
+- `daemon.log` — uvicorn output, truncated on restart if over 10 MiB
+
+By default the daemon binds to `0.0.0.0` so devices on your local network or Tailnet can reach it. The trust boundary is your network — there is no auth layer. Pass `--host 127.0.0.1` to bind loopback only.
+
+If the daemon can't be reached for any reason, the hook falls back to a one-shot standalone server on the same port (or an ephemeral one if the port is taken). The `--standalone` flag bypasses the daemon entirely.
 
 ## Install
 
@@ -102,11 +136,14 @@ Installable as a PWA on Android Chrome. Static port means you can pin it to your
 ## Configuration
 
 ```bash
-# Change the port (default 8567)
+# Change the port (default 8567); a separate daemon runs per port
 serve-review --port 9000
 
-# Bind to a specific interface (default 0.0.0.0)
+# Bind to a specific interface (default 0.0.0.0; trust boundary is your network)
 serve-review --host 127.0.0.1
+
+# One-shot standalone (no daemon, no cache, blocks the calling process)
+serve-review --standalone
 ```
 
 Port and host apply to hook installation too:
@@ -115,9 +152,9 @@ Port and host apply to hook installation too:
 serve-review install-claude-hook --port 9000
 ```
 
-## Output on denial
+## Denial output
 
-Structured JSON to stdout for agent consumption:
+When you deny, comments are written to stdout as JSON. An AI agent that called `git push` sees this in the hook's output and uses it directly; there's no separate plumbing to wire up.
 
 ```json
 {
@@ -133,7 +170,7 @@ Structured JSON to stdout for agent consumption:
 }
 ```
 
-Human-readable summary goes to stderr.
+A human-readable summary of the same content goes to stderr.
 
 ## Development
 

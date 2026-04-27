@@ -3,27 +3,33 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
+import urllib.error
+import urllib.request
 from typing import TYPE_CHECKING
 
 import click
 
+from serve_review import cache
 from serve_review.models import Decision
 
 if TYPE_CHECKING:
-    from serve_review.models import ReviewRequest
+    from serve_review.models import ReviewDecision, ReviewRequest
 
 DEFAULT_PORT = 8567
 
 
-@click.group(invoke_without_command=True, context_settings={"ignore_unknown_options": True})
+@click.group(invoke_without_command=True)
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
 @click.option("--base", default=None, help="Base ref for manual diff (instead of hook stdin).")
 @click.option("--head", default=None, help="Head ref for manual diff (defaults to HEAD).")
-@click.option("--hook", is_flag=True, hidden=True, help="Running as git pre-push hook.")
-@click.option("--claude-hook", is_flag=True, hidden=True, help="Running as Claude Code hook.")
-@click.argument("hook_args", nargs=-1, type=click.UNPROCESSED)
+@click.option(
+    "--standalone",
+    is_flag=True,
+    help="Bypass the daemon and run a one-shot standalone server.",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -31,55 +37,148 @@ def main(
     host: str,
     base: str | None,
     head: str | None,
-    hook: bool,
-    claude_hook: bool,
-    hook_args: tuple[str, ...],
+    standalone: bool,
 ) -> None:
     """Pre-push review gate with mobile-friendly web UI."""
     if ctx.invoked_subcommand is not None:
         return
 
-    is_hook = hook or claude_hook
     try:
         _run_review(
-            hook=is_hook,
-            hook_args=hook_args,
+            mode="manual",
+            hook_args=(),
             base=base,
             head=head,
             host=host,
             port=port,
+            standalone=standalone,
         )
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
-        if is_hook:
-            # In hook mode, a crash must not block the push. Warn and allow.
-            click.echo(f"serve-review: crashed, allowing push: {exc}", err=True)
-            sys.exit(0)
+        click.echo(f"serve-review: error: {exc}", err=True)
         raise
+
+
+@main.command(
+    "hook",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
+@click.option("--host", default="0.0.0.0", help="Host to bind to.")
+@click.option(
+    "--standalone",
+    is_flag=True,
+    help="Bypass the daemon and run a one-shot standalone server.",
+)
+@click.argument("hook_args", nargs=-1, type=click.UNPROCESSED)
+def hook_cmd(
+    port: int,
+    host: str,
+    standalone: bool,
+    hook_args: tuple[str, ...],
+) -> None:
+    """Run as a git pre-push hook (reads stdin per the pre-push protocol).
+
+    Git invokes pre-push hooks with two positional arguments: the remote name
+    and the remote URL. They are forwarded here as HOOK_ARGS.
+    """
+    try:
+        _run_review(
+            mode="hook",
+            hook_args=hook_args,
+            base=None,
+            head=None,
+            host=host,
+            port=port,
+            standalone=standalone,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        # In hook mode, a crash must not block the push. Warn and allow.
+        click.echo(f"serve-review: crashed, allowing push: {exc}", err=True)
+        sys.exit(0)
+
+
+@main.command(
+    "claude-hook",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
+@click.option("--host", default="0.0.0.0", help="Host to bind to.")
+@click.option(
+    "--standalone",
+    is_flag=True,
+    help="Bypass the daemon and run a one-shot standalone server.",
+)
+@click.argument("hook_args", nargs=-1, type=click.UNPROCESSED)
+def claude_hook_cmd(
+    port: int,
+    host: str,
+    standalone: bool,
+    hook_args: tuple[str, ...],
+) -> None:
+    """Run as a Claude Code PreToolUse hook (intercepts git push)."""
+    try:
+        _run_review(
+            mode="claude-hook",
+            hook_args=hook_args,
+            base=None,
+            head=None,
+            host=host,
+            port=port,
+            standalone=standalone,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        click.echo(f"serve-review: crashed, allowing push: {exc}", err=True)
+        sys.exit(0)
+
+
+def _print_review_banner(host: str, port: int, review: ReviewRequest) -> None:
+    """Print the review URL and a one-line summary to stderr."""
+    url = _build_review_url(host, port)
+    click.echo(f"Review: {url}", err=True)
+    click.echo(
+        f"  {len(review.commits)} commit(s), {len(review.files)} file(s)"
+        f"{', FORCE PUSH' if review.push_info.is_force_push else ''}",
+        err=True,
+    )
+    click.echo("Blocking until review is approved or denied at the URL above", err=True)
 
 
 def _run_review(
     *,
-    hook: bool,
+    mode: str,
     hook_args: tuple[str, ...],
     base: str | None,
     head: str | None,
     host: str,
     port: int,
+    standalone: bool = False,
 ) -> None:
+    from serve_review.cache import cache_age_human
+    from serve_review.client import (
+        DaemonError,
+        ensure_daemon,
+        submit_review,
+        wait_for_decision,
+    )
     from serve_review.git_ops import build_review_from_refs, build_review_request, parse_push_stdin
-    from serve_review.server import format_decision_human, format_decision_json, run_server
+    from serve_review.models import compute_diff_hash
+    from serve_review.server import format_decision_human, format_decision_json
 
-    # Determine how we were invoked and build a refresh function
+    is_hook = mode in ("hook", "claude-hook")
+
     refresh_fn = None
-    if hook:
+    if mode == "hook":
         # Git passes <remote-name> <remote-url> as positional args to pre-push hooks
         remote_name = hook_args[0] if len(hook_args) > 0 else "origin"
         remote_url = hook_args[1] if len(hook_args) > 1 else ""
         pushes = parse_push_stdin(sys.stdin, remote_name=remote_name, remote_url=remote_url)
         if not pushes:
-            # Nothing to review (e.g. branch delete)
             sys.exit(0)
         push_info = pushes[0]
         review = build_review_request(push_info)
@@ -90,6 +189,7 @@ def _run_review(
         review = build_review_from_refs(resolved_base, resolved_head)
         refresh_fn = lambda: build_review_from_refs(resolved_base, resolved_head)  # noqa: E731
     else:
+        # mode == "manual" with no base, or mode == "claude-hook"
         review = _build_default_review()
         refresh_fn = _build_default_review
 
@@ -97,28 +197,100 @@ def _run_review(
         click.echo("Nothing to review: no commits or changes between base and HEAD.", err=True)
         sys.exit(0)
 
-    url = _build_review_url(host, port)
-    click.echo(f"Review: {url}", err=True)
-    click.echo(
-        f"  {len(review.commits)} commit(s), {len(review.files)} file(s)"
-        f"{', FORCE PUSH' if review.push_info.is_force_push else ''}",
-        err=True,
-    )
-    click.echo("Blocking until review is approved or denied at the URL above", err=True)
+    if standalone:
+        decision = _run_standalone(review, host, port, refresh_fn, is_hook)
+    else:
+        # Track whether the daemon was successfully reached. If we already
+        # spawned/connected to a daemon and a later step (submit/wait) fails,
+        # falling back to standalone on the SAME port would just collide. In
+        # that case, surface the daemon error rather than retrying.
+        daemon_ready = False
+        try:
+            ensure_daemon(host, port)
+            daemon_ready = True
+            diff_hash = compute_diff_hash(review.files)
+            review_id, cached_decision, cached_at = submit_review(port, review, diff_hash)
+            if cached_decision is not None:
+                age = cache_age_human(cached_at) if cached_at else "unknown age"
+                click.echo(
+                    f"serve-review: decision served from cache ({age})",
+                    err=True,
+                )
+                decision = cached_decision
+            else:
+                _print_review_banner(host, port, review)
+                decision = wait_for_decision(port, review_id)
+        except DaemonError as exc:
+            if daemon_ready:
+                # Daemon was healthy when we started but the protocol failed
+                # mid-flight. Standalone on the same port would collide; just
+                # report the error.
+                click.echo(f"serve-review: daemon error: {exc}", err=True)
+                if is_hook:
+                    sys.exit(0)
+                sys.exit(1)
+            click.echo(
+                f"serve-review: daemon unavailable ({exc}), using standalone mode",
+                err=True,
+            )
+            decision = _run_standalone(review, host, port, refresh_fn, is_hook)
 
-    try:
-        decision = asyncio.run(run_server(review, port=port, host=host, refresh_fn=refresh_fn))
-    except OSError as exc:
-        click.echo(str(exc), err=True)
-        sys.exit(1)
-
-    # Output results
     click.echo(format_decision_human(decision), err=True)
 
     if decision.decision == Decision.DENY:
-        # Machine-readable JSON to stdout for AI agents
         click.echo(format_decision_json(decision))
         sys.exit(1)
+
+
+def _run_standalone(
+    review: ReviewRequest,
+    host: str,
+    port: int,
+    refresh_fn: object,
+    is_hook: bool,
+) -> ReviewDecision:
+    """Run the standalone server fallback. Returns the ReviewDecision.
+
+    If ``port`` is already bound (most likely by something unrelated, since
+    callers only invoke standalone when the daemon path failed), pick a free
+    ephemeral port instead of failing twice.
+    """
+    from serve_review.server import run_server
+
+    actual_port = _resolve_standalone_port(host, port)
+    _print_review_banner(host, actual_port, review)
+    try:
+        return asyncio.run(
+            run_server(review, port=actual_port, host=host, refresh_fn=refresh_fn)  # type: ignore[arg-type]
+        )
+    except OSError as exc:
+        click.echo(str(exc), err=True)
+        if is_hook:
+            sys.exit(0)
+        sys.exit(1)
+
+
+def _resolve_standalone_port(host: str, preferred: int) -> int:
+    """Return ``preferred`` if free; otherwise an OS-assigned ephemeral port.
+
+    Avoids the double-failure where the daemon path failed because the port
+    is taken and the standalone retry then trips the same bind error.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        try:
+            sock.bind((host, preferred))
+            return preferred
+        except OSError:
+            pass
+        # Preferred is taken. Bind to port 0 to let the OS pick.
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
 
 
 @main.command()
@@ -148,6 +320,81 @@ def uninstall_hook() -> None:
     else:
         click.echo("No serve-review pre-push hook found.", err=True)
         sys.exit(1)
+
+
+@main.group()
+def daemon() -> None:
+    """Manage the review daemon."""
+
+
+@daemon.command("start")
+@click.option("--port", "-p", default=DEFAULT_PORT, help="Port to bind the daemon to.")
+@click.option("--host", default="0.0.0.0", help="Host to bind the daemon to.")
+def daemon_start(port: int, host: str) -> None:
+    """Start the daemon in foreground (use for debugging)."""
+    from serve_review.daemon import run_daemon
+
+    run_daemon(host=host, port=port)
+
+
+@daemon.command("stop")
+@click.option("--port", "-p", default=DEFAULT_PORT, help="Port of the daemon to stop.")
+@click.option("--all", "all_", is_flag=True, help="Stop every running daemon.")
+def daemon_stop(port: int, all_: bool) -> None:
+    """Stop a running daemon."""
+    from serve_review.cache import list_daemons
+    from serve_review.client import kill_daemon
+
+    if all_:
+        running = list_daemons()
+        if not running:
+            click.echo("No daemons running.")
+            return
+        for daemon_port, _pid in running:
+            kill_daemon(daemon_port)
+            click.echo(f"Stopped daemon on port {daemon_port}.")
+        return
+
+    pid = cache.read_pid_file(port)
+    if pid is None:
+        click.echo(f"No daemon running on port {port}.", err=True)
+        sys.exit(1)
+    kill_daemon(port)
+    click.echo(f"Stopped daemon on port {port}.")
+
+
+@daemon.command("status")
+def daemon_status() -> None:
+    """Show all running daemons and their queue depths."""
+    from serve_review.cache import list_daemons
+
+    running = list_daemons()
+    if not running:
+        click.echo("No daemons running.")
+        return
+
+    click.echo(f"{len(running)} daemon(s) running:")
+    for port, pid in running:
+        url = _build_review_url("0.0.0.0", port)
+        queued = _query_queue_depth(port)
+        queued_str = f"{queued} review(s) queued" if queued is not None else "queue unavailable"
+        click.echo(f"  port {port}  pid {pid}  {queued_str}  url {url}")
+
+
+def _query_queue_depth(port: int) -> int | None:
+    """Return the daemon's queued-review count via /api/health, or None on error."""
+    url = f"http://127.0.0.1:{port}/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
+    queued = data.get("queued")
+    if isinstance(queued, int):
+        return queued
+    return None
 
 
 @main.command()
@@ -204,8 +451,6 @@ def _find_default_branch() -> str:
 
     from serve_review.git_ops import run_git
 
-    # Try common base refs in priority order.
-    # upstream/* first (fork workflow), then origin/* (direct clone).
     candidates = [
         "upstream/master",
         "upstream/main",
@@ -213,7 +458,6 @@ def _find_default_branch() -> str:
         "origin/main",
     ]
 
-    # Also try origin/HEAD (set by git clone)
     try:
         ref = run_git("symbolic-ref", "refs/remotes/origin/HEAD")
         candidates.insert(0, ref.replace("refs/remotes/", ""))
@@ -239,11 +483,9 @@ def _build_review_url(host: str, port: int) -> str:
     import socket
     import subprocess
 
-    # If bound to a specific non-wildcard address, use that
     if host not in ("0.0.0.0", "::"):
         return f"http://{host}:{port}"
 
-    # Try Tailscale FQDN first
     try:
         result = subprocess.run(
             ["tailscale", "status", "--self", "--json"],
@@ -252,16 +494,12 @@ def _build_review_url(host: str, port: int) -> str:
             timeout=2,
         )
         if result.returncode == 0:
-            import json
-
             data = json.loads(result.stdout)
             dns_name = data.get("Self", {}).get("DNSName", "")
             if dns_name:
-                # DNSName has a trailing dot, strip it
                 return f"http://{dns_name.rstrip('.')}:{port}"
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         pass
 
-    # Fall back to hostname
     hostname = socket.getfqdn() or socket.gethostname()
     return f"http://{hostname}:{port}"

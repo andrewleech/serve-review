@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -15,20 +16,22 @@ _SERVE_REVIEW_MARKER = "# serve-review pre-push hook"
 _HOOK_STANDALONE = """\
 #!/bin/sh
 {marker}
-serve-review --hook "$@"
+serve-review hook "$@"
 """
 
-# Chaining hook: runs the original hook first, then serve-review for human review.
-# Stdin (ref info) is saved to a temp file so both hooks can read it.
+# Chaining hook: runs the original hook first, then serve-review for human
+# review. Stdin (ref info) is saved to a temp file so both hooks can read it.
+# {original} is shell-quoted by the formatter so paths with spaces or other
+# metacharacters don't break the script.
 _HOOK_CHAINING = """\
 #!/bin/sh
 {marker}
 _sr_stdin=$(mktemp)
 cat > "$_sr_stdin"
 # Run the original pre-push hook first (lint, format, etc).
-"{original}" "$@" < "$_sr_stdin" || {{ rm -f "$_sr_stdin"; exit $?; }}
+{original} "$@" < "$_sr_stdin" || {{ rm -f "$_sr_stdin"; exit $?; }}
 # Automated checks passed. Now run serve-review for human review.
-serve-review --hook "$@" < "$_sr_stdin"
+serve-review hook "$@" < "$_sr_stdin"
 _sr_rc=$?
 rm -f "$_sr_stdin"
 exit $_sr_rc
@@ -118,7 +121,7 @@ def install_pre_push_hook(force: bool = False) -> HookInstallResult:
             backup_path.chmod(backup_path.stat().st_mode | stat.S_IEXEC)
             hook_content = _HOOK_CHAINING.format(
                 marker=_SERVE_REVIEW_MARKER,
-                original=backup_path,
+                original=shlex.quote(str(backup_path)),
             )
             hook_path.write_text(hook_content)
             hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC)
@@ -172,7 +175,7 @@ def generate_pre_commit_config() -> str:
     hooks:
       - id: serve-review
         name: serve-review
-        entry: serve-review --hook
+        entry: serve-review hook
         language: system
         always_run: true
         stages: [pre-push]
@@ -181,16 +184,46 @@ def generate_pre_commit_config() -> str:
 
 
 def get_claude_code_hook_config(port: int = 8567) -> dict[str, object]:
-    """Generate Claude Code PreToolUse hook configuration."""
+    """Generate Claude Code PreToolUse hook configuration.
+
+    Schema reference (from working Claude Code installations):
+        {
+          "hooks": {
+            "PreToolUse": [
+              {"matcher": "Bash", "hooks": [{"type": "command", "command": "..."}]}
+            ]
+          }
+        }
+
+    The matcher narrows to Bash invocations; the inner command must itself
+    inspect ``$CLAUDE_TOOL_INPUT`` to decide whether the bash command is a
+    ``git push`` and exit 0 silently otherwise. Without this, the hook fires
+    on every Bash call and gates unrelated commands behind serve-review.
+    """
     serve_review_path = _find_serve_review_executable()
+    # Inline shell wrapper: read JSON tool input from stdin (Claude Code's
+    # protocol for command hooks), check for "git push" in the command field,
+    # invoke serve-review only on a match.
+    wrapper = (
+        "import json,sys,subprocess; "
+        "data=json.load(sys.stdin); "
+        "cmd=data.get('tool_input',{}).get('command','') "
+        "if isinstance(data,dict) else ''; "
+        f"sys.exit(subprocess.call(['{serve_review_path}','claude-hook',"
+        f"'--port','{port}'])) "
+        "if 'git push' in cmd else sys.exit(0)"
+    )
     return {
         "hooks": {
             "PreToolUse": [
                 {
                     "matcher": "Bash",
-                    "pattern": "git\\s+push",
-                    "command": f"{serve_review_path} --claude-hook --port {port}",
-                    "blocking": True,
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"python3 -c {shlex.quote(wrapper)}",
+                        }
+                    ],
                 }
             ]
         }
@@ -227,8 +260,22 @@ def install_claude_code_hook(port: int = 8567, global_: bool = False) -> Path:
     if not isinstance(pre_tool, list):
         pre_tool = []
 
-    # Remove any existing serve-review hooks
-    pre_tool = [h for h in pre_tool if "serve-review" not in str(h.get("command", ""))]
+    # Remove any existing serve-review hooks. Under Claude Code's schema each
+    # entry is ``{"matcher": str, "hooks": [{"type": "command", "command": str}]}``,
+    # so the serve-review marker lives in the inner command, not the top level.
+    def _has_serve_review(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        # New schema: nested under entry["hooks"][i]["command"].
+        inner = entry.get("hooks")
+        if isinstance(inner, list):
+            for h in inner:
+                if isinstance(h, dict) and "serve-review" in str(h.get("command", "")):
+                    return True
+        # Defensive: also drop legacy top-level command form if present.
+        return "serve-review" in str(entry.get("command", ""))
+
+    pre_tool = [h for h in pre_tool if not _has_serve_review(h)]
 
     # Add ours
     new_hooks = hook_config["hooks"]
