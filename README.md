@@ -1,9 +1,147 @@
 # serve-review
 
-A pre-push review gate that blocks `git push` until a human approves the diff in a mobile-friendly web UI.
+Pre-push review gate that blocks `git push` until a human approves the diff in a web UI.
 
 ## Why this exists
 
-I had an AI coding agent fabricate a copyright attribution in a commit that got pushed to a public upstream repo under my name. The maintainer asked "Who is Blake Garner??" and trust was damaged. The agent had invented the name from nothing, buried it in a license header, and I'd approved the push without reading the diff line-by-line.
+I had an AI coding agent fabricate a copyright attribution ("Copyright (c) 2022 Blake W. Garner") in a commit that got pushed to a public upstream repo under my name. The maintainer asked "Who is Blake Garner??" and trust was damaged. The agent had invented the name from nothing, buried it in a license header, and I'd approved the push without reading the diff.
 
-Claude Code's permission prompt gives you a chance to approve or deny a `git push`, but it doesn't show you the actual diff. You're approving blind. This tool fills that gap by serving a proper diff viewer on a static port so you can review on your phone (or any device on your network) before the push goes through.
+Claude Code gives you a permission prompt before `git push`, but it doesn't show the actual diff. You're approving blind. serve-review fills that gap: it serves the diff on a static port so you can review on your phone, tablet, or any device on your network before the push goes through.
+
+Particularly useful for the "iterate and force-push" workflow on existing PRs, where subsequent changes bypass the initial draft-PR review.
+
+## How it works
+
+1. You (or your AI agent) run `git push`
+2. The pre-push hook starts serve-review on port 8567
+3. You open the URL on your phone (bookmarkable, installable as a PWA)
+4. Review the diff, tap **Approve** or **Request Changes**
+5. Approve: push proceeds. Deny: comments are returned as structured JSON so the agent can act on them
+
+The push is blocked until you make a decision.
+
+## Install
+
+```bash
+uv tool install serve-review
+
+# or with pip
+pip install serve-review
+```
+
+## Setup
+
+### Git pre-push hook (per repo)
+
+```bash
+serve-review install-hook
+```
+
+Installs a pre-push hook in `.git/hooks/pre-push`. Every `git push` in that repo requires review.
+
+If you already have a pre-push hook (from pre-commit or otherwise), use `--force` to chain them:
+
+```bash
+serve-review install-hook --force
+```
+
+This backs up your existing hook to `pre-push.original` and creates a wrapper that runs your original hook first, then serve-review on success. To undo:
+
+```bash
+serve-review uninstall-hook
+```
+
+### pre-commit framework
+
+If you use the [pre-commit](https://pre-commit.com/) framework:
+
+```bash
+serve-review pre-commit-config
+```
+
+Prints a YAML snippet for `.pre-commit-config.yaml`. Then:
+
+```bash
+pre-commit install --hook-type pre-push
+```
+
+### Claude Code hook
+
+Intercepts `git push` commands the agent attempts via a `PreToolUse` hook:
+
+```bash
+# Project-level (.claude/settings.json)
+serve-review install-claude-hook
+
+# User-wide (~/.claude/settings.json)
+serve-review install-claude-hook --global
+```
+
+### Manual
+
+```bash
+# Diff current branch against the default branch
+serve-review
+
+# Diff between specific refs
+serve-review --base origin/main --head HEAD
+```
+
+## The review UI
+
+Dark-themed, mobile-first diff viewer on port 8567. Bundled Prism.js for syntax highlighting.
+
+- Unified diff with collapsible file sections
+- Commit list with full messages, click to filter diff to one commit's files
+- Attention flags: added lines containing email addresses, URLs, copyright text, author attributions, or license keywords get an amber highlight. A banner links to the first flagged line
+- Line-level inline comments, similar to GitHub's review UI
+- Approve / Request Changes buttons in a fixed bottom bar
+
+Installable as a PWA on Android Chrome. Static port means you can pin it to your home screen and it stays at the same address.
+
+## Configuration
+
+```bash
+# Change the port (default 8567)
+serve-review --port 9000
+
+# Bind to a specific interface (default 0.0.0.0)
+serve-review --host 127.0.0.1
+```
+
+Port and host apply to hook installation too:
+
+```bash
+serve-review install-claude-hook --port 9000
+```
+
+## Output on denial
+
+Structured JSON to stdout for agent consumption:
+
+```json
+{
+  "decision": "deny",
+  "overall_comment": "The copyright attribution on line 1 is fabricated",
+  "comments": [
+    {
+      "body": "This name doesn't exist in the project, remove it",
+      "file": "lib/header.h",
+      "line": 1
+    }
+  ]
+}
+```
+
+Human-readable summary goes to stderr.
+
+## Development
+
+```bash
+git clone https://github.com/andrewleech/serve-review.git
+cd serve-review
+uv sync
+uv run pytest -v
+uv run ruff check src/ tests/
+uv run mypy src/
+```
