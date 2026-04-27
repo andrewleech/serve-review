@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.resources
 import json
-from dataclasses import asdict
-from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,17 +23,6 @@ from serve_review.models import (
     ReviewDecision,
     ReviewRequest,
 )
-
-
-def _serialize(obj: Any) -> Any:
-    """JSON-safe serialization for dataclasses with enums."""
-    if isinstance(obj, Enum):
-        return obj.value
-    if isinstance(obj, dict):
-        return {k: _serialize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_serialize(v) for v in obj]
-    return obj
 
 
 class ReviewServer:
@@ -80,8 +67,7 @@ class ReviewServer:
 
             with contextlib.suppress(Exception):
                 self.review = self._refresh_fn()
-        data = _serialize(asdict(self.review))
-        return JSONResponse(data)
+        return JSONResponse(self.review.to_dict())
 
     async def _approve(self, request: Request) -> Response:
         if self.decision is not None:

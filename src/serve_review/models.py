@@ -3,9 +3,27 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import Any
+
+
+def serialize_for_json(obj: Any) -> Any:
+    """Recursively convert enums to their values for JSON serialization.
+
+    ``dataclasses.asdict()`` walks dataclasses and produces nested dicts/lists,
+    but leaves Enum instances as-is. This walks the result and unwraps them.
+    Public helper because both the standalone server and the daemon need it.
+    """
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, dict):
+        return {k: serialize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [serialize_for_json(v) for v in obj]
+    return obj
 
 
 class Decision(enum.Enum):
@@ -88,6 +106,18 @@ class ReviewRequest:
     files: list[FileDiff]
     has_attention_flags: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        return serialize_for_json(asdict(self))  # type: ignore[no-any-return]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReviewRequest:
+        return cls(
+            push_info=PushInfo(**data["push_info"]),
+            commits=[CommitInfo(**c) for c in data.get("commits", [])],
+            files=[_file_diff_from_dict(f) for f in data.get("files", [])],
+            has_attention_flags=data.get("has_attention_flags", False),
+        )
+
 
 @dataclass
 class ReviewComment:
@@ -103,11 +133,162 @@ class ReviewDecision:
     overall_comment: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        return serialize_for_json(asdict(self))  # type: ignore[no-any-return]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReviewDecision:
+        return cls(
+            decision=Decision(data["decision"]),
+            overall_comment=data.get("overall_comment", ""),
+            comments=[
+                ReviewComment(
+                    body=c["body"],
+                    file=c.get("file"),
+                    line=c.get("line"),
+                )
+                for c in data.get("comments", [])
+            ],
+        )
+
+    @classmethod
+    def from_approve_body(cls, body: dict[str, Any]) -> ReviewDecision:
+        """Build an APPROVE decision from an HTTP approve-endpoint body."""
+        return cls(
+            decision=Decision.APPROVE,
+            overall_comment=body.get("overall_comment", ""),
+            comments=[
+                ReviewComment(
+                    body=c["body"],
+                    file=c.get("file"),
+                    line=c.get("line"),
+                )
+                for c in body.get("comments", [])
+            ],
+        )
+
+    @classmethod
+    def from_deny_body(cls, body: dict[str, Any]) -> ReviewDecision:
+        """Build a DENY decision from an HTTP deny-endpoint body."""
+        return cls(
+            decision=Decision.DENY,
+            overall_comment=body.get("overall_comment", ""),
+            comments=[
+                ReviewComment(
+                    body=c["body"],
+                    file=c.get("file"),
+                    line=c.get("line"),
+                )
+                for c in body.get("comments", [])
+            ],
+        )
+
+
+@dataclass
+class ReviewQueueItem:
+    """A review in the daemon's queue. Tracks lifecycle through the status field."""
+
+    id: str
+    diff_hash: str
+    review: ReviewRequest
+    status: str  # "pending", "decided", "orphaned"
+    decision: ReviewDecision | None
+    submitted_at: float
+    decided_at: float | None
+
+
+@dataclass(frozen=True)
+class CachedDecision:
+    """A decision persisted to the cache for replay on identical diffs."""
+
+    diff_hash: str
+    timestamp: str  # ISO 8601 in UTC
+    decision: ReviewDecision
+    branch: str  # informational
+    remote: str  # informational
+
+    def to_dict(self) -> dict[str, Any]:
         return {
-            "decision": self.decision.value,
-            "overall_comment": self.overall_comment,
-            "comments": [{"body": c.body, "file": c.file, "line": c.line} for c in self.comments],
+            "diff_hash": self.diff_hash,
+            "timestamp": self.timestamp,
+            "decision": self.decision.to_dict(),
+            "branch": self.branch,
+            "remote": self.remote,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CachedDecision:
+        return cls(
+            diff_hash=data["diff_hash"],
+            timestamp=data["timestamp"],
+            decision=ReviewDecision.from_dict(data["decision"]),
+            branch=data.get("branch", ""),
+            remote=data.get("remote", ""),
+        )
+
+
+def _file_diff_from_dict(data: dict[str, Any]) -> FileDiff:
+    return FileDiff(
+        old_path=data["old_path"],
+        new_path=data["new_path"],
+        is_new=data["is_new"],
+        is_deleted=data["is_deleted"],
+        is_rename=data["is_rename"],
+        language=data["language"],
+        hunks=[
+            DiffHunk(
+                header=h["header"],
+                lines=[
+                    DiffLine(
+                        line_type=line["line_type"],
+                        content=line["content"],
+                        old_line_no=line["old_line_no"],
+                        new_line_no=line["new_line_no"],
+                        flags=[
+                            AttentionFlag(
+                                kind=AttentionKind(flag["kind"]),
+                                start=flag["start"],
+                                end=flag["end"],
+                                text=flag["text"],
+                            )
+                            for flag in line.get("flags", [])
+                        ],
+                    )
+                    for line in h["lines"]
+                ],
+            )
+            for h in data["hunks"]
+        ],
+    )
+
+
+# --- Diff hashing ---
+
+# Byte separator placed between every field fed to the hash. Without separators,
+# concatenating "ab" + "c" hashes the same as "a" + "bc", which would let
+# unrelated diffs collide.
+_HASH_SEP = b"\x00"
+
+
+def compute_diff_hash(files: list[FileDiff]) -> str:
+    """SHA256 over diff content only, stable across rebases that don't change content.
+
+    Hashes new_path + line_type + content for every line, with a NUL separator
+    between every field and a double NUL between files. Excludes commit SHAs,
+    timestamps, and push metadata so a rebase that keeps the same final content
+    hits the same cache entry as the original review.
+    """
+    h = hashlib.sha256()
+    for f in sorted(files, key=lambda x: x.new_path):
+        h.update(f.new_path.encode("utf-8"))
+        h.update(_HASH_SEP)
+        for hunk in f.hunks:
+            for line in hunk.lines:
+                h.update(line.line_type.encode("utf-8"))
+                h.update(_HASH_SEP)
+                h.update(line.content.encode("utf-8"))
+                h.update(_HASH_SEP)
+        h.update(_HASH_SEP)  # extra separator marks file boundary
+    return h.hexdigest()
 
 
 # --- Attention pattern scanning ---

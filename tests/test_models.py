@@ -7,6 +7,7 @@ from serve_review.models import (
     Decision,
     ReviewComment,
     ReviewDecision,
+    ReviewRequest,
     guess_language,
     scan_attention,
 )
@@ -96,3 +97,39 @@ class TestReviewDecision:
         assert len(result["comments"]) == 2
         assert result["comments"][0]["file"] == "header.h"
         assert result["comments"][1]["file"] is None
+
+    def test_from_dict_round_trip_approve(self) -> None:
+        original = ReviewDecision(decision=Decision.APPROVE, overall_comment="LGTM")
+        rebuilt = ReviewDecision.from_dict(original.to_dict())
+        assert rebuilt == original
+
+    def test_from_dict_round_trip_deny_with_comments(self) -> None:
+        original = ReviewDecision(
+            decision=Decision.DENY,
+            overall_comment="rework",
+            comments=[
+                ReviewComment(body="bad name", file="x.c", line=42),
+                ReviewComment(body="general"),
+            ],
+        )
+        rebuilt = ReviewDecision.from_dict(original.to_dict())
+        assert rebuilt == original
+
+
+class TestReviewRequestSerialization:
+    def test_round_trip(self, sample_review: ReviewRequest) -> None:
+        rebuilt = ReviewRequest.from_dict(sample_review.to_dict())
+        assert rebuilt == sample_review
+
+    def test_round_trip_preserves_attention_flags(self, sample_review: ReviewRequest) -> None:
+        rebuilt = ReviewRequest.from_dict(sample_review.to_dict())
+        first_line = rebuilt.files[0].hunks[0].lines[0]
+        kinds = {f.kind for f in first_line.flags}
+        assert AttentionKind.COPYRIGHT in kinds
+        assert AttentionKind.EMAIL in kinds
+
+    def test_to_dict_is_json_serializable(self, sample_review: ReviewRequest) -> None:
+        import json
+
+        # Should not raise; enums must already be unwrapped.
+        json.dumps(sample_review.to_dict())
