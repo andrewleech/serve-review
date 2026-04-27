@@ -891,6 +891,25 @@ mark.attention-flag {
         padding: 8px 12px;
     }
 
+    /* Stack commit header in narrow sidebar: sha + author on row 1, message on row 2. */
+    #sidebar .commit-header {
+        flex-wrap: wrap;
+        align-items: center;
+        row-gap: 2px;
+    }
+
+    #sidebar .commit-message {
+        flex-basis: 100%;
+        order: 2;
+        word-break: normal;
+        overflow-wrap: break-word;
+    }
+
+    #sidebar .commit-meta {
+        order: 1;
+        margin-left: auto;
+    }
+
     /* On desktop, commits + file nav are in the sidebar */
     #mobile-nav-container {
         display: none;

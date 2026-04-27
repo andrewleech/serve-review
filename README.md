@@ -13,7 +13,7 @@ Particularly useful for the "iterate and force-push" workflow on existing PRs, w
 ## How it works
 
 1. You (or your AI agent) run `git push`
-2. The pre-push hook starts serve-review on port 8567
+2. The pre-push hook starts serve-review on port 8567 (by default)
 3. You open the URL on your phone (bookmarkable, installable as a PWA)
 4. Review the diff, tap **Approve** or **Request Changes**
 5. Approve: push proceeds. Deny: comments are returned as structured JSON so the agent can act on them
