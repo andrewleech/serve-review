@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from typing import TextIO
 
@@ -318,10 +319,57 @@ def _fallback_diff(raw_diff: str, diff_range: list[str]) -> list[FileDiff]:
     return files
 
 
+def find_upstream_default() -> str | None:
+    """Best guess at the upstream's default branch ref name (e.g. ``upstream/main``).
+
+    Resolution order:
+
+    1. ``git config serve-review.upstreamRef`` for an explicit per-repo override.
+    2. ``refs/remotes/upstream/HEAD`` symbolic ref (the conventional fork
+       workflow: ``upstream`` is the canonical project, ``origin`` is the
+       reviewer's fork).
+    3. ``refs/remotes/origin/HEAD`` symbolic ref (direct-clone workflow,
+       set by ``git clone`` and ``git remote set-head origin --auto``).
+
+    Returns None if none resolve. Callers decide on fallback behaviour.
+    """
+    with contextlib.suppress(subprocess.CalledProcessError):
+        configured = run_git("config", "serve-review.upstreamRef")
+        if configured:
+            return configured
+
+    for symref in ("refs/remotes/upstream/HEAD", "refs/remotes/origin/HEAD"):
+        try:
+            target = run_git("symbolic-ref", symref)
+        except subprocess.CalledProcessError:
+            continue
+        return target.removeprefix("refs/remotes/")
+
+    return None
+
+
 def build_review_request(push_info: PushInfo) -> ReviewRequest:
-    """Build a complete ReviewRequest from push info."""
-    commits = get_commits(push_info.remote_sha, push_info.local_sha)
-    files = get_diff(push_info.remote_sha, push_info.local_sha)
+    """Build a complete ReviewRequest from push info.
+
+    The diff is always computed from ``merge-base(upstream_default,
+    local_sha)`` instead of from the push's ``remote_sha``. This shows what
+    the branch contributes to upstream rather than what changed on the
+    remote, which is the right framing for review: rebase churn from
+    upstream is not part of the branch's content. For a fast-forward push
+    on a freshly-tracking branch the two bases collapse to the same commit
+    so behaviour is unchanged.
+
+    Falls back to ``remote_sha`` when no upstream default ref can be
+    discovered (unusual repo layouts) or when the merge-base lookup fails.
+    """
+    base_sha = push_info.remote_sha
+    upstream = find_upstream_default()
+    if upstream is not None:
+        with contextlib.suppress(subprocess.CalledProcessError):
+            base_sha = run_git("merge-base", upstream, push_info.local_sha)
+
+    commits = get_commits(base_sha, push_info.local_sha)
+    files = get_diff(base_sha, push_info.local_sha)
     has_flags = any(
         flag for f in files for h in f.hunks for line in h.lines for flag in line.flags
     )
