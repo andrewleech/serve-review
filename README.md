@@ -131,7 +131,7 @@ Dark-themed, mobile-first diff viewer on port 8567. Bundled Prism.js for syntax 
 - Line-level inline comments, similar to GitHub's review UI
 - Approve / Request Changes buttons in a fixed bottom bar
 
-Installable as a PWA on Android Chrome. Static port means you can pin it to your home screen and it stays at the same address.
+Installable as a PWA on Android Chrome. Static port means you can pin it to your home screen and it stays at the same address. **Note:** PWA installation requires HTTPS; see [HTTPS setup](#https) below.
 
 ## Configuration
 
@@ -151,6 +151,28 @@ Port and host apply to hook installation too:
 ```bash
 serve-review install-claude-hook --port 9000
 ```
+
+## HTTPS
+
+HTTPS is required to install the review UI as a PWA, and is useful when accessing the daemon over Tailscale or other networks.
+
+Enable HTTPS by setting certificate and key paths as environment variables:
+
+```bash
+export SERVE_REVIEW_SSL_CERT=/path/to/cert.pem
+export SERVE_REVIEW_SSL_KEY=/path/to/key.pem
+serve-review daemon start
+```
+
+If using Tailscale, you can use its local API to get TLS certificates:
+
+```bash
+export SERVE_REVIEW_SSL_CERT=~/.local/share/tailscale/certs/$(hostname).crt
+export SERVE_REVIEW_SSL_KEY=~/.local/share/tailscale/certs/$(hostname).key
+serve-review daemon start
+```
+
+The daemon will use HTTP if these variables are not set.
 
 ## Denial output
 

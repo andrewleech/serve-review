@@ -536,6 +536,9 @@ def run_daemon(host: str, port: int) -> None:
     Refuses to start if a live PID file already claims this port. On clean
     shutdown the PID file is removed via ``atexit``; uvicorn handles SIGINT
     and SIGTERM itself.
+
+    HTTPS can be enabled by setting SERVE_REVIEW_SSL_CERT and SERVE_REVIEW_SSL_KEY
+    environment variables to point to the certificate and key files.
     """
     import uvicorn
 
@@ -553,7 +556,16 @@ def run_daemon(host: str, port: int) -> None:
     atexit.register(cache.remove_pid_file, port)
 
     server = DaemonServer(host, port)
-    config = uvicorn.Config(server.app, host=host, port=port, log_level="warning")
+    ssl_cert = os.getenv("SERVE_REVIEW_SSL_CERT")
+    ssl_key = os.getenv("SERVE_REVIEW_SSL_KEY")
+    config = uvicorn.Config(
+        server.app,
+        host=host,
+        port=port,
+        log_level="warning",
+        ssl_certfile=ssl_cert,
+        ssl_keyfile=ssl_key,
+    )
     uvi = uvicorn.Server(config)
     asyncio.run(uvi.serve())
 
