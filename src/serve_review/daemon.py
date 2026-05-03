@@ -378,9 +378,7 @@ class DaemonServer:
         try:
             review = ReviewRequest.from_dict(body["review"])
         except (KeyError, TypeError, ValueError) as exc:
-            return JSONResponse(
-                {"error": f"malformed review payload: {exc}"}, status_code=400
-            )
+            return JSONResponse({"error": f"malformed review payload: {exc}"}, status_code=400)
 
         # Recompute the hash server-side. Trusting a client-supplied value
         # would let any reachable client claim a previously-approved hash for
@@ -493,9 +491,7 @@ class DaemonServer:
                     # if nothing arrives, send a comment line so any proxy
                     # in the path doesn't treat the connection as idle.
                     try:
-                        event = await asyncio.wait_for(
-                            sub.get(), timeout=_SSE_KEEPALIVE_SECONDS
-                        )
+                        event = await asyncio.wait_for(sub.get(), timeout=_SSE_KEEPALIVE_SECONDS)
                     except TimeoutError:
                         yield ": keepalive\n\n"
                         continue

@@ -277,9 +277,7 @@ class TestQueryQueueDepth:
         diff_hash = compute_diff_hash(sample_review.files)
         server.queue.submit(sample_review, diff_hash)
 
-        depth = await asyncio.get_event_loop().run_in_executor(
-            None, cli._query_queue_depth, port
-        )
+        depth = await asyncio.get_event_loop().run_in_executor(None, cli._query_queue_depth, port)
         assert depth == 1
 
     def test_returns_none_when_daemon_unreachable(self) -> None:

@@ -448,16 +448,12 @@ class TestCacheReplayDefense:
 
 
 class TestBodyValidation:
-    async def test_submit_missing_review_returns_400(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_submit_missing_review_returns_400(self, client: AsyncClient) -> None:
         resp = await client.post("/api/queue", json={})
         assert resp.status_code == 400
         assert "error" in resp.json()
 
-    async def test_submit_invalid_json_returns_400(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_submit_invalid_json_returns_400(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/queue",
             content=b"not json",
@@ -543,8 +539,7 @@ class TestConcurrentReviews:
 
         first_file = review_b.files[0]
         modified_lines = [
-            replace(line, content=line.content + " // b")
-            for line in first_file.hunks[0].lines
+            replace(line, content=line.content + " // b") for line in first_file.hunks[0].lines
         ]
         new_hunk = DiffHunk(header=first_file.hunks[0].header, lines=modified_lines)
         review_b = replace(
