@@ -298,9 +298,10 @@ class ReviewQueue:
 class DaemonServer:
     """Owns the Starlette app and the in-memory ``ReviewQueue``."""
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, scheme: str = "http") -> None:
         self.host = host
         self.port = port
+        self.scheme = scheme
         self.queue = ReviewQueue()
         self.app = self._build_app()
 
@@ -365,6 +366,7 @@ class DaemonServer:
                 "status": "ok",
                 "queued": len(self.queue),
                 "port": self.port,
+                "scheme": self.scheme,
             }
         )
 
@@ -541,9 +543,17 @@ def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
     otherwise falls back to HTTP. Can also be configured via SERVE_REVIEW_SSL_CERT
     and SERVE_REVIEW_SSL_KEY environment variables.
     """
+    import logging
     import uvicorn
 
     from serve_review.cert_manager import CertificateManager
+
+    # Configure logging so cert_manager telemetry reaches daemon.log (via stderr)
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
     existing = cache.read_pid_file(port)
     if existing is not None:
@@ -564,8 +574,6 @@ def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
         if not cert_manager.provision():
             print("warning: Tailscale certificate provisioning failed, using HTTP", file=sys.stderr)
 
-    server = DaemonServer(host, port)
-
     # Determine SSL configuration: env vars take precedence, then provisioned certs, else HTTP
     ssl_cert = os.getenv("SERVE_REVIEW_SSL_CERT")
     ssl_key = os.getenv("SERVE_REVIEW_SSL_KEY")
@@ -575,6 +583,9 @@ def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
         if crt_path and key_path:
             ssl_cert = str(crt_path)
             ssl_key = str(key_path)
+
+    scheme = "https" if (ssl_cert and ssl_key) else "http"
+    server = DaemonServer(host, port, scheme=scheme)
 
     config = uvicorn.Config(
         server.app,
@@ -594,5 +605,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="python -m serve_review.daemon")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8567)
+    parser.add_argument(
+        "--disable-tailscale",
+        action="store_true",
+        help="Disable automatic Tailscale certificate provisioning.",
+    )
     args = parser.parse_args()
-    run_daemon(host=args.host, port=args.port)
+    run_daemon(host=args.host, port=args.port, disable_tailscale=args.disable_tailscale)

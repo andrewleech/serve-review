@@ -484,17 +484,23 @@ def _find_default_branch() -> str:
 
 
 def _build_review_url(host: str, port: int) -> str:
-    """Build a useful review URL, preferring the Tailscale FQDN and HTTPS if available."""
+    """Build a useful review URL, preferring the Tailscale FQDN.
+
+    Queries /api/health to determine the actual scheme (http vs https).
+    """
     import socket
     import subprocess
 
-    from serve_review import cache
-    from serve_review.cert_manager import CertificateManager
+    from serve_review.client import DaemonError, get_health
 
-    # Determine if we have provisioned certificates
-    cert_manager = CertificateManager(cache.CACHE_DIR)
-    crt_path, key_path = cert_manager.get_cert_paths()
-    scheme = "https" if (crt_path and key_path) else "http"
+    # Query daemon for actual scheme
+    scheme = "http"
+    try:
+        health = get_health(port)
+        scheme = health.get("scheme", "http")
+    except DaemonError:
+        # Daemon not reachable yet, use http
+        pass
 
     if host not in ("0.0.0.0", "::"):
         return f"{scheme}://{host}:{port}"

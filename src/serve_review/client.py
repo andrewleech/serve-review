@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
 from serve_review import cache
 from serve_review.models import (
@@ -40,6 +41,24 @@ class DaemonError(Exception):
     """
 
 
+def get_health(port: int) -> dict[str, Any]:
+    """Get health status from the daemon.
+
+    Returns a dict with daemon status info. Raises DaemonError if unreachable.
+    """
+    url = f"http://127.0.0.1:{port}/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            if resp.status != 200:
+                raise DaemonError(f"health check returned {resp.status}")
+            data: Any = json.loads(resp.read().decode("utf-8"))
+            return dict(data) if isinstance(data, dict) else {}
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        raise DaemonError(f"health check failed: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise DaemonError(f"health response invalid JSON: {exc}") from exc
+
+
 def daemon_is_running(port: int) -> bool:
     """Return True if a healthy daemon is listening on ``port``.
 
@@ -47,15 +66,10 @@ def daemon_is_running(port: int) -> bool:
     ``cache.read_pid_file`` itself. A live PID file alone is not sufficient,
     so we also probe ``/api/health`` with a short timeout.
     """
-    pid = cache.read_pid_file(port)
-    if pid is None:
-        return False
-
-    url = f"http://127.0.0.1:{port}/api/health"
     try:
-        with urllib.request.urlopen(url, timeout=2.0) as resp:
-            return bool(resp.status == 200)
-    except (urllib.error.URLError, OSError, TimeoutError):
+        get_health(port)
+        return True
+    except DaemonError:
         return False
 
 
