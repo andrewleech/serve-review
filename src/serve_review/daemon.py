@@ -45,6 +45,8 @@ if TYPE_CHECKING:
 
     from starlette.requests import Request
 
+    from serve_review.cert_manager import CertificateManager
+
 
 # Reject POST bodies above this size before reading. Real review submissions
 # are well under 1 MiB; the cap exists to bound the cost of a bad client or a
@@ -298,10 +300,13 @@ class ReviewQueue:
 class DaemonServer:
     """Owns the Starlette app and the in-memory ``ReviewQueue``."""
 
-    def __init__(self, host: str, port: int, scheme: str = "http") -> None:
+    def __init__(
+        self, host: str, port: int, scheme: str = "http", cert_manager: CertificateManager | None = None
+    ) -> None:
         self.host = host
         self.port = port
         self.scheme = scheme
+        self.cert_manager = cert_manager
         self.queue = ReviewQueue()
         self.app = self._build_app()
 
@@ -335,12 +340,16 @@ class DaemonServer:
         @contextlib.asynccontextmanager
         async def lifespan(app: Starlette) -> AsyncIterator[None]:
             sweep_task = asyncio.create_task(self._cache_sweep_loop())
+            renewal_task = asyncio.create_task(self._cert_renewal_loop())
             try:
                 yield
             finally:
                 sweep_task.cancel()
+                renewal_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await sweep_task
+                with contextlib.suppress(asyncio.CancelledError):
+                    await renewal_task
 
         return Starlette(routes=routes, lifespan=lifespan)
 
@@ -353,6 +362,29 @@ class DaemonServer:
                 return
             with contextlib.suppress(Exception):
                 cache.cleanup_stale_decisions()
+
+    async def _cert_renewal_loop(self) -> None:
+        """Check certificate renewal every 24 hours. Runs for the daemon's life."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        if not self.cert_manager:
+            return
+
+        while True:
+            try:
+                await asyncio.sleep(86400)  # 24 hours
+            except asyncio.CancelledError:
+                return
+
+            with contextlib.suppress(Exception):
+                if self.cert_manager.check_renewal_needed():
+                    logger.info("Certificate renewal check triggered renewal")
+                    if self.cert_manager.renew():
+                        logger.info("Certificate renewed successfully")
+                    else:
+                        logger.warning("Certificate renewal failed, will retry in 24h")
 
     async def _index(self, request: Request) -> Response:
         static_dir = importlib.resources.files("serve_review").joinpath("static")
@@ -585,7 +617,7 @@ def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
             ssl_key = str(key_path)
 
     scheme = "https" if (ssl_cert and ssl_key) else "http"
-    server = DaemonServer(host, port, scheme=scheme)
+    server = DaemonServer(host, port, scheme=scheme, cert_manager=cert_manager)
 
     config = uvicorn.Config(
         server.app,
