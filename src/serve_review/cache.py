@@ -46,6 +46,11 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+def certs_dir() -> Path:
+    """Directory where TLS certificates are stored. Created on demand."""
+    return _ensure_dir(CACHE_DIR / "certs")
+
+
 def decisions_dir() -> Path:
     """Directory where cached decisions are persisted. Created on demand."""
     return _ensure_dir(CACHE_DIR / "decisions")

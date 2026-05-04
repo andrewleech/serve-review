@@ -330,11 +330,16 @@ def daemon() -> None:
 @daemon.command("start")
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to bind the daemon to.")
 @click.option("--host", default="0.0.0.0", help="Host to bind the daemon to.")
-def daemon_start(port: int, host: str) -> None:
+@click.option(
+    "--disable-tailscale",
+    is_flag=True,
+    help="Disable automatic Tailscale certificate provisioning.",
+)
+def daemon_start(port: int, host: str, disable_tailscale: bool) -> None:
     """Start the daemon in foreground (use for debugging)."""
     from serve_review.daemon import run_daemon
 
-    run_daemon(host=host, port=port)
+    run_daemon(host=host, port=port, disable_tailscale=disable_tailscale)
 
 
 @daemon.command("stop")
@@ -479,12 +484,20 @@ def _find_default_branch() -> str:
 
 
 def _build_review_url(host: str, port: int) -> str:
-    """Build a useful review URL, preferring the Tailscale FQDN."""
+    """Build a useful review URL, preferring the Tailscale FQDN and HTTPS if available."""
     import socket
     import subprocess
 
+    from serve_review import cache
+    from serve_review.cert_manager import CertificateManager
+
+    # Determine if we have provisioned certificates
+    cert_manager = CertificateManager(cache.CACHE_DIR)
+    crt_path, key_path = cert_manager.get_cert_paths()
+    scheme = "https" if (crt_path and key_path) else "http"
+
     if host not in ("0.0.0.0", "::"):
-        return f"http://{host}:{port}"
+        return f"{scheme}://{host}:{port}"
 
     try:
         result = subprocess.run(
@@ -497,9 +510,9 @@ def _build_review_url(host: str, port: int) -> str:
             data = json.loads(result.stdout)
             dns_name = data.get("Self", {}).get("DNSName", "")
             if dns_name:
-                return f"http://{dns_name.rstrip('.')}:{port}"
+                return f"{scheme}://{dns_name.rstrip('.')}:{port}"
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         pass
 
     hostname = socket.getfqdn() or socket.gethostname()
-    return f"http://{hostname}:{port}"
+    return f"{scheme}://{hostname}:{port}"

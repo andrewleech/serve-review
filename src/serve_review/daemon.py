@@ -530,17 +530,20 @@ def _rotate_log_if_oversized(path: Path) -> None:
         f.truncate(0)
 
 
-def run_daemon(host: str, port: int) -> None:
+def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
     """Start the daemon process. Blocks until uvicorn exits.
 
     Refuses to start if a live PID file already claims this port. On clean
     shutdown the PID file is removed via ``atexit``; uvicorn handles SIGINT
     and SIGTERM itself.
 
-    HTTPS can be enabled by setting SERVE_REVIEW_SSL_CERT and SERVE_REVIEW_SSL_KEY
-    environment variables to point to the certificate and key files.
+    Attempts to provision TLS certificates via Tailscale if available,
+    otherwise falls back to HTTP. Can also be configured via SERVE_REVIEW_SSL_CERT
+    and SERVE_REVIEW_SSL_KEY environment variables.
     """
     import uvicorn
+
+    from serve_review.cert_manager import CertificateManager
 
     existing = cache.read_pid_file(port)
     if existing is not None:
@@ -555,16 +558,31 @@ def run_daemon(host: str, port: int) -> None:
     cache.write_pid_file(port, os.getpid())
     atexit.register(cache.remove_pid_file, port)
 
+    # Attempt to provision TLS certificates via Tailscale
+    cert_manager = CertificateManager(cache.CACHE_DIR, disable=disable_tailscale)
+    if cert_manager.should_provision():
+        if not cert_manager.provision():
+            print("warning: Tailscale certificate provisioning failed, using HTTP", file=sys.stderr)
+
     server = DaemonServer(host, port)
+
+    # Determine SSL configuration: env vars take precedence, then provisioned certs, else HTTP
     ssl_cert = os.getenv("SERVE_REVIEW_SSL_CERT")
     ssl_key = os.getenv("SERVE_REVIEW_SSL_KEY")
+
+    if not ssl_cert or not ssl_key:
+        crt_path, key_path = cert_manager.get_cert_paths()
+        if crt_path and key_path:
+            ssl_cert = str(crt_path)
+            ssl_key = str(key_path)
+
     config = uvicorn.Config(
         server.app,
         host=host,
         port=port,
         log_level="warning",
-        ssl_certfile=ssl_cert,
-        ssl_keyfile=ssl_key,
+        ssl_certfile=ssl_cert if ssl_cert else None,
+        ssl_keyfile=ssl_key if ssl_key else None,
     )
     uvi = uvicorn.Server(config)
     asyncio.run(uvi.serve())
