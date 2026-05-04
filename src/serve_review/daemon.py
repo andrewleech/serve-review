@@ -378,13 +378,15 @@ class DaemonServer:
             except asyncio.CancelledError:
                 return
 
-            with contextlib.suppress(Exception):
+            try:
                 if self.cert_manager.check_renewal_needed():
                     logger.info("Certificate renewal check triggered renewal")
                     if self.cert_manager.renew():
                         logger.info("Certificate renewed successfully")
                     else:
                         logger.warning("Certificate renewal failed, will retry in 24h")
+            except Exception:
+                logger.exception("Error in certificate renewal loop")
 
     async def _index(self, request: Request) -> Response:
         static_dir = importlib.resources.files("serve_review").joinpath("static")
@@ -393,6 +395,9 @@ class DaemonServer:
         return HTMLResponse(html)
 
     async def _health(self, request: Request) -> Response:
+        # Unauthenticated endpoint used by clients to detect daemon availability and
+        # scheme (http vs https). The daemon is single-user and only binds to loopback
+        # so this doesn't leak sensitive data.
         return JSONResponse(
             {
                 "status": "ok",
@@ -564,7 +569,7 @@ def _rotate_log_if_oversized(path: Path) -> None:
         f.truncate(0)
 
 
-def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
+def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> None:
     """Start the daemon process. Blocks until uvicorn exits.
 
     Refuses to start if a live PID file already claims this port. On clean
@@ -579,6 +584,14 @@ def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
     import uvicorn
 
     from serve_review.cert_manager import CertificateManager
+
+    # Check env var if disable_tailscale not explicitly passed
+    if disable_tailscale is None:
+        disable_tailscale = os.getenv("SERVE_REVIEW_DISABLE_TAILSCALE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
 
     # Configure logging so cert_manager telemetry reaches daemon.log (via stderr)
     logging.basicConfig(
@@ -618,6 +631,12 @@ def run_daemon(host: str, port: int, disable_tailscale: bool = False) -> None:
 
     scheme = "https" if (ssl_cert and ssl_key) else "http"
     server = DaemonServer(host, port, scheme=scheme, cert_manager=cert_manager)
+
+    # Write scheme to sidecar file so clients know the transport
+    try:
+        cache.scheme_file(port).write_text(scheme)
+    except Exception:
+        pass  # Non-fatal if we can't write the file
 
     config = uvicorn.Config(
         server.app,

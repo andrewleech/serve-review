@@ -62,6 +62,14 @@ def pid_file(port: int) -> Path:
     return CACHE_DIR / f"daemon-{port}.pid"
 
 
+def scheme_file(port: int) -> Path:
+    """Path to file recording daemon's TLS scheme (http or https).
+
+    Written by the daemon so clients know which transport to use.
+    """
+    return CACHE_DIR / f"daemon-{port}.scheme"
+
+
 def log_file() -> Path:
     """Path to the shared daemon log. Parent directory is created on demand."""
     _ensure_dir(CACHE_DIR)

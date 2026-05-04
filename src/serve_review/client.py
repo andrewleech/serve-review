@@ -46,9 +46,13 @@ def get_health(port: int) -> dict[str, Any]:
 
     Returns a dict with daemon status info. Raises DaemonError if unreachable.
     """
-    url = f"http://127.0.0.1:{port}/api/health"
+    url = _get_daemon_url(port, "/api/health")
     try:
-        with urllib.request.urlopen(url, timeout=2.0) as resp:
+        kwargs: dict[str, Any] = {"timeout": 2.0}
+        if url.startswith("https://"):
+            kwargs["context"] = _get_https_context()
+
+        with urllib.request.urlopen(url, **kwargs) as resp:
             if resp.status != 200:
                 raise DaemonError(f"health check returned {resp.status}")
             data: Any = json.loads(resp.read().decode("utf-8"))
@@ -57,6 +61,28 @@ def get_health(port: int) -> dict[str, Any]:
         raise DaemonError(f"health check failed: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise DaemonError(f"health response invalid JSON: {exc}") from exc
+
+
+def _get_daemon_url(port: int, path: str = "") -> str:
+    """Get the correct URL for the daemon, detecting scheme from sidecar file."""
+    scheme = "http"
+    try:
+        scheme_file = cache.scheme_file(port)
+        if scheme_file.exists():
+            scheme = scheme_file.read_text().strip()
+    except Exception:
+        pass
+    return f"{scheme}://127.0.0.1:{port}{path}"
+
+
+def _get_https_context() -> Any:
+    """Create SSL context for loopback HTTPS (no hostname verification)."""
+    import ssl
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 def daemon_is_running(port: int) -> bool:
@@ -181,7 +207,7 @@ def submit_review(
     cached fields are None and the caller must follow up with
     ``wait_for_decision``.
     """
-    url = f"http://127.0.0.1:{port}/api/queue"
+    url = _get_daemon_url(port, "/api/queue")
     payload = json.dumps({"review": review.to_dict(), "diff_hash": diff_hash}).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -191,7 +217,10 @@ def submit_review(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
+        kwargs: dict[str, Any] = {"timeout": 10.0}
+        if url.startswith("https://"):
+            kwargs["context"] = _get_https_context()
+        with urllib.request.urlopen(req, **kwargs) as resp:
             body = resp.read().decode("utf-8")
     except (urllib.error.URLError, OSError) as exc:
         raise DaemonError(f"failed to submit review: {exc}") from exc
@@ -225,11 +254,14 @@ def wait_for_decision(port: int, review_id: str) -> ReviewDecision:
     stream emits an error event, closes without a decision, or fails at the
     transport level (including read timeout).
     """
-    url = f"http://127.0.0.1:{port}/api/queue/{review_id}/decision"
+    url = _get_daemon_url(port, f"/api/queue/{review_id}/decision")
     req = urllib.request.Request(url)
 
     try:
-        resp = urllib.request.urlopen(req, timeout=_SSE_READ_TIMEOUT)
+        kwargs: dict[str, Any] = {"timeout": _SSE_READ_TIMEOUT}
+        if url.startswith("https://"):
+            kwargs["context"] = _get_https_context()
+        resp = urllib.request.urlopen(req, **kwargs)
     except (urllib.error.URLError, OSError) as exc:
         raise DaemonError(f"failed to open decision stream: {exc}") from exc
 

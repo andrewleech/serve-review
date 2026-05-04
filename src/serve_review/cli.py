@@ -441,10 +441,10 @@ def cert_status(port: int) -> None:
         click.echo(f"Expires: {expiry.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         click.echo(f"Time remaining: {days_left}d {hours_left}h")
 
-        if days_left < 30:
-            click.echo("⚠ Renewal will occur within 30 days")
-        elif days_left < 7:
-            click.echo("⚠ Renewal imminent (< 7 days)")
+        if days_left < 7:
+            click.echo("warning: Renewal imminent (< 7 days)")
+        elif days_left < 30:
+            click.echo("note: Renewal will occur within 30 days")
 
     except ImportError:
         click.echo("cryptography not available; cannot read certificate details")

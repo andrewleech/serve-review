@@ -156,7 +156,26 @@ serve-review install-claude-hook --port 9000
 
 HTTPS is required to install the review UI as a PWA, and is useful when accessing the daemon over Tailscale or other networks.
 
-Enable HTTPS by setting certificate and key paths as environment variables:
+### Automatic provisioning (Tailscale)
+
+If you're on a Tailscale network and Tailscale is installed, the daemon automatically provisions TLS certificates on startup and manages renewals in the background:
+
+```bash
+serve-review daemon start
+```
+
+The daemon detects Tailscale availability, provisions a certificate for your machine's Tailscale hostname, stores it in `~/.cache/serve-review/certs/`, and renews it automatically when it falls within 30 days of expiry.
+
+Disable auto-provisioning if you prefer to provide your own certificates or run without HTTPS:
+
+```bash
+serve-review daemon start --disable-tailscale
+export SERVE_REVIEW_DISABLE_TAILSCALE=1  # or set this env var for auto-spawn case
+```
+
+### Manual certificates
+
+Provide your own certificate and key as environment variables:
 
 ```bash
 export SERVE_REVIEW_SSL_CERT=/path/to/cert.pem
@@ -164,15 +183,35 @@ export SERVE_REVIEW_SSL_KEY=/path/to/key.pem
 serve-review daemon start
 ```
 
-If using Tailscale, you can use its local API to get TLS certificates:
+These take precedence over auto-provisioning. The daemon falls back to HTTP if no certificates are configured and auto-provisioning is disabled or unavailable.
+
+### Certificate management
+
+Inspect the provisioned certificate:
 
 ```bash
-export SERVE_REVIEW_SSL_CERT=~/.local/share/tailscale/certs/$(hostname).crt
-export SERVE_REVIEW_SSL_KEY=~/.local/share/tailscale/certs/$(hostname).key
-serve-review daemon start
+serve-review cert status
 ```
 
-The daemon will use HTTP if these variables are not set.
+Manually trigger renewal:
+
+```bash
+serve-review cert renew
+```
+
+Delete cached certificates (next daemon start will re-provision):
+
+```bash
+serve-review cert forget
+```
+
+### Cache layout
+
+Certificates and daemon metadata are stored in `~/.cache/serve-review/`:
+
+- `certs/{hostname}.crt`, `certs/{hostname}.key` — provisioned TLS certificates
+- `daemon-{port}.scheme` — sidecar file indicating daemon's transport (http or https)
+- Other files: PID files, decision cache, logs
 
 ## Denial output
 

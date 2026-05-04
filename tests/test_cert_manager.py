@@ -6,7 +6,7 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -173,13 +173,15 @@ class TestCertificateManager:
 
     def test_check_renewal_needed_returns_false_on_import_error(self, tmp_path: Path) -> None:
         """Renewal check handles missing cryptography gracefully."""
+        import sys
+
         certs_dir = tmp_path / "certs"
         certs_dir.mkdir()
         (certs_dir / "host.ts.net.crt").write_text("fake cert")
 
         manager = CertificateManager(tmp_path)
         with patch.object(manager.detector, "get_hostname", return_value="host.ts.net"):
-            with patch("builtins.__import__", side_effect=ImportError()):
+            with patch.dict(sys.modules, {"cryptography.x509": None}):
                 assert manager.check_renewal_needed() is False
 
     def test_renew_calls_provision(self, tmp_path: Path) -> None:

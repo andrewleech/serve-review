@@ -84,11 +84,11 @@ class TailscaleDetector:
         if not status:
             return None
 
-        self_info: Any = status.get("Self", {})
+        self_info = status.get("Self", {})
         if not isinstance(self_info, dict):
             return None
 
-        dns_name: Any = self_info.get("DNSName", "")
+        dns_name = self_info.get("DNSName", "")
         if isinstance(dns_name, str) and dns_name:
             return str(dns_name.rstrip("."))
 
@@ -117,6 +117,13 @@ class CertificateManager:
         self.renewal_days_threshold = renewal_days_threshold
         self.runner = runner or subprocess.run
         self._hostname: str | None = None
+
+    def _cleanup_temp_files(self, hostname: str, pid: int) -> None:
+        """Remove temporary cert and key files."""
+        crt_temp = self.certs_dir / f"{hostname}.crt.tmp.{pid}"
+        key_temp = self.certs_dir / f"{hostname}.key.tmp.{pid}"
+        crt_temp.unlink(missing_ok=True)
+        key_temp.unlink(missing_ok=True)
 
     def should_provision(self) -> bool:
         """Return True if we should attempt to provision certificates.
@@ -192,20 +199,17 @@ class CertificateManager:
             if result.returncode != 0:
                 stderr_msg = result.stderr.strip() if result.stderr else f"rc={result.returncode}"
                 logger.error("tailscale cert failed: %s", stderr_msg)
-                crt_temp.unlink(missing_ok=True)
-                key_temp.unlink(missing_ok=True)
+                self._cleanup_temp_files(hostname, pid)
                 return False
 
             if not crt_temp.exists() or crt_temp.stat().st_size == 0:
                 logger.error("Certificate file is empty or missing")
-                crt_temp.unlink(missing_ok=True)
-                key_temp.unlink(missing_ok=True)
+                self._cleanup_temp_files(hostname, pid)
                 return False
 
             if not key_temp.exists() or key_temp.stat().st_size == 0:
                 logger.error("Key file is empty or missing")
-                crt_temp.unlink(missing_ok=True)
-                key_temp.unlink(missing_ok=True)
+                self._cleanup_temp_files(hostname, pid)
                 return False
 
             crt_temp.chmod(0o644)
@@ -227,13 +231,11 @@ class CertificateManager:
 
         except subprocess.TimeoutExpired:
             logger.error("tailscale cert command timed out")
-            crt_temp.unlink(missing_ok=True)
-            key_temp.unlink(missing_ok=True)
+            self._cleanup_temp_files(hostname, pid)
             return False
         except Exception:
             logger.exception("Error provisioning certificate")
-            crt_temp.unlink(missing_ok=True)
-            key_temp.unlink(missing_ok=True)
+            self._cleanup_temp_files(hostname, pid)
             return False
 
     def check_renewal_needed(self) -> bool:
@@ -268,7 +270,7 @@ class CertificateManager:
                 cert_data = f.read()
 
             cert = x509.load_pem_x509_certificate(cert_data, default_backend())
-            expiry: Any = cert.not_valid_after_utc
+            expiry = cert.not_valid_after_utc
 
             now = datetime.now(UTC)
             renewal_threshold = now + timedelta(days=self.renewal_days_threshold)
@@ -297,6 +299,7 @@ class CertificateManager:
 
         Scans the certs directory for any .crt file, allowing operation even
         if Tailscale is offline (e.g., on restart before network is up).
+        Also caches the hostname to avoid re-querying Tailscale.
         """
         if not self.certs_dir.exists():
             return None, None
