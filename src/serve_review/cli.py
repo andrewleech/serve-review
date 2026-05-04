@@ -402,6 +402,90 @@ def _query_queue_depth(port: int) -> int | None:
     return None
 
 
+@main.group()
+def cert() -> None:
+    """Manage TLS certificates."""
+
+
+@cert.command("status")
+@click.option("--port", "-p", default=DEFAULT_PORT, help="Port of the daemon.")
+def cert_status(port: int) -> None:
+    """Show TLS certificate status."""
+    from datetime import UTC, datetime
+
+    from serve_review import cache
+    from serve_review.cert_manager import CertificateManager
+
+    cert_manager = CertificateManager(cache.CACHE_DIR)
+    crt_path, key_path = cert_manager.get_cert_paths()
+
+    if not crt_path or not key_path:
+        click.echo("No certificate provisioned.")
+        return
+
+    try:
+        from cryptography import x509  # type: ignore[import-not-found]
+        from cryptography.hazmat.backends import default_backend  # type: ignore[import-not-found]
+
+        with open(crt_path, "rb") as f:
+            cert_data = f.read()
+        cert_obj = x509.load_pem_x509_certificate(cert_data, default_backend())
+        expiry = cert_obj.not_valid_after_utc
+
+        now = datetime.now(UTC)
+        days_left = (expiry - now).days
+        hours_left = int(((expiry - now).total_seconds() % 86400) / 3600)
+
+        click.echo(f"Certificate path: {crt_path}")
+        click.echo(f"Key path: {key_path}")
+        click.echo(f"Expires: {expiry.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        click.echo(f"Time remaining: {days_left}d {hours_left}h")
+
+        if days_left < 30:
+            click.echo("⚠ Renewal will occur within 30 days")
+        elif days_left < 7:
+            click.echo("⚠ Renewal imminent (< 7 days)")
+
+    except ImportError:
+        click.echo("cryptography not available; cannot read certificate details")
+        click.echo(f"Certificate: {crt_path}")
+        click.echo(f"Key: {key_path}")
+    except Exception as exc:
+        click.echo(f"Error reading certificate: {exc}", err=True)
+
+
+@cert.command("renew")
+def cert_renew() -> None:
+    """Manually trigger certificate renewal."""
+    from serve_review import cache
+    from serve_review.cert_manager import CertificateManager
+
+    cert_manager = CertificateManager(cache.CACHE_DIR)
+
+    if cert_manager.renew():
+        click.echo("Certificate renewed successfully.")
+    else:
+        click.echo("Certificate renewal failed. Check daemon logs.", err=True)
+
+
+@cert.command("forget")
+def cert_forget() -> None:
+    """Delete cached certificates. Next daemon start will re-provision."""
+    import shutil
+
+    from serve_review import cache
+
+    certs_dir = cache.certs_dir()
+    try:
+        if certs_dir.exists():
+            shutil.rmtree(certs_dir)
+            click.echo(f"Deleted certificate cache at {certs_dir}")
+        else:
+            click.echo("No certificate cache found.")
+    except Exception as exc:
+        click.echo(f"Error deleting certificate cache: {exc}", err=True)
+
+
 @main.command()
 def pre_commit_config() -> None:
     """Print a .pre-commit-config.yaml snippet for serve-review."""
