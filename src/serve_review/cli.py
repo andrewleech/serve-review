@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 DEFAULT_PORT = 8567
 
 
-@click.group(invoke_without_command=True)
+@click.group(invoke_without_command=True, context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
 @click.option("--base", default=None, help="Base ref for manual diff (instead of hook stdin).")
@@ -322,7 +322,7 @@ def uninstall_hook() -> None:
         sys.exit(1)
 
 
-@main.group()
+@main.group(context_settings={"help_option_names": ["-h", "--help"]})
 def daemon() -> None:
     """Manage the review daemon."""
 
@@ -402,7 +402,7 @@ def _query_queue_depth(port: int) -> int | None:
     return None
 
 
-@main.group()
+@main.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cert() -> None:
     """Manage TLS certificates."""
 
