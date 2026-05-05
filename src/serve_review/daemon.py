@@ -617,7 +617,15 @@ def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> N
     cert_manager = CertificateManager(cache.CACHE_DIR, disable=disable_tailscale)
     if cert_manager.should_provision():
         if not cert_manager.provision():
-            print("warning: Tailscale certificate provisioning failed, using HTTP", file=sys.stderr)
+            if cert_manager.detector.is_connected():
+                print(
+                    "warning: Tailscale certificate provisioning failed. "
+                    "Check daemon.log for details. "
+                    "You may need to run: sudo tailscale set --operator=$USER",
+                    file=sys.stderr,
+                )
+            else:
+                print("warning: Tailscale not connected, using HTTP", file=sys.stderr)
 
     # Determine SSL configuration: env vars take precedence, then provisioned certs, else HTTP
     ssl_cert = os.getenv("SERVE_REVIEW_SSL_CERT")
