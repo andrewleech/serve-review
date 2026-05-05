@@ -162,6 +162,14 @@ serve-review daemon start
 
 The daemon detects Tailscale availability, provisions a certificate for your machine's Tailscale hostname, stores it in `~/.cache/serve-review/certs/`, and renews it automatically when it falls within 30 days of expiry.
 
+**First-time setup:** Grant certificate provisioning permission (one-time):
+
+```bash
+sudo tailscale set --operator=$USER
+```
+
+This allows the daemon to call `tailscale cert` without needing sudo. After running this once, restart the daemon and it will provision HTTPS certificates automatically.
+
 Disable auto-provisioning if you prefer to provide your own certificates or run without HTTPS:
 
 ```bash
