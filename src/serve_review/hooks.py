@@ -90,9 +90,10 @@ def install_pre_push_hook(force: bool = False) -> HookInstallResult:
 
     If an existing hook is present:
     - If it's a serve-review hook: overwrite it.
-    - If it's another hook and force=False: raise FileExistsError with guidance.
-    - If it's another hook and force=True: back up the original and install a
-      chaining hook that runs serve-review first, then the original.
+    - If it's another hook: back up the original and install a chaining hook
+      that runs the original hook first, then serve-review for human review.
+      (The original hook runs first so linters and formatters can fix issues
+      before prompting for human approval.)
     """
     hooks_dir = get_git_hooks_dir()
     hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -103,18 +104,6 @@ def install_pre_push_hook(force: bool = False) -> HookInstallResult:
         if _is_serve_review_hook(hook_path):
             # Ours, safe to overwrite
             pass
-        elif not force:
-            hint = ""
-            if _is_pre_commit_hook(hook_path):
-                hint = (
-                    "\n\nThis looks like a pre-commit framework hook. You can either:"
-                    "\n  1. Use --force to chain serve-review before pre-commit"
-                    "\n  2. Add serve-review as a local pre-commit hook instead"
-                    "\n     (see: serve-review pre-commit-config)"
-                )
-            else:
-                hint = "\n\nUse --force to chain serve-review before the existing hook."
-            raise FileExistsError(f"Pre-push hook already exists at {hook_path}.{hint}")
         else:
             # Back up existing hook and create chaining wrapper
             shutil.copy2(hook_path, backup_path)

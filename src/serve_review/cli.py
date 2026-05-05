@@ -294,9 +294,14 @@ def _resolve_standalone_port(host: str, preferred: int) -> int:
 
 
 @main.command()
-@click.option("--force", is_flag=True, help="Chain with existing hook (backs up original).")
+@click.option("--force", is_flag=True, help="Deprecated; auto-wrapping is now the default.")
 def install_hook(force: bool) -> None:
-    """Install git pre-push hook in the current repository."""
+    """Install git pre-push hook in the current repository.
+
+    If an existing hook is present, it's automatically backed up and wrapped
+    so both hooks run: the original hook first (for lint/format), then
+    serve-review for human review.
+    """
     from serve_review.hooks import install_pre_push_hook
 
     try:

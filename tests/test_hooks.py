@@ -73,14 +73,18 @@ class TestInstallPrePushHook:
         assert "serve-review --hook" not in content
         assert "--hook" not in content
 
-    def test_reinstall_without_force_on_foreign_hook_raises(self, git_repo: Path) -> None:
+    def test_foreign_hook_is_auto_wrapped(self, git_repo: Path) -> None:
         hook_path = git_repo / ".git" / "hooks" / "pre-push"
+        backup_path = git_repo / ".git" / "hooks" / "pre-push.original"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text("#!/bin/sh\necho not ours\n")
+        original_body = "#!/bin/sh\necho not ours\n"
+        hook_path.write_text(original_body)
         hook_path.chmod(0o755)
 
-        with pytest.raises(FileExistsError):
-            install_pre_push_hook(force=False)
+        result = install_pre_push_hook(force=False)
+        assert result.chained is True
+        assert backup_path.exists()
+        assert backup_path.read_text() == original_body
 
     def test_reinstall_with_force_backs_up_and_chains(self, git_repo: Path) -> None:
         hook_path = git_repo / ".git" / "hooks" / "pre-push"
