@@ -73,13 +73,9 @@ serve-review install-hook
 
 Installs a pre-push hook in `.git/hooks/pre-push`. Every `git push` in that repo requires review.
 
-If you already have a pre-push hook (from pre-commit or otherwise), use `--force` to chain them:
+If you already have a pre-push hook (from pre-commit, husky, or otherwise), it's automatically wrapped: your existing hook runs first (for lint/format), then serve-review for human review. The original hook is backed up to `pre-push.original`.
 
-```bash
-serve-review install-hook --force
-```
-
-This backs up your existing hook to `pre-push.original` and creates a wrapper that runs your original hook first, then serve-review on success. To undo:
+To undo and restore the original hook:
 
 ```bash
 serve-review uninstall-hook
