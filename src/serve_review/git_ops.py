@@ -180,7 +180,12 @@ def get_diff(base_sha: str, head_sha: str) -> list[FileDiff]:
         diff_range = [base_sha, head_sha]
 
     try:
-        raw_diff = run_git("diff", "--no-color", "-U3", *diff_range)
+        raw_diff = subprocess.run(
+            ["git", "diff", "--no-color", "-U3", *diff_range],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
     except subprocess.CalledProcessError:
         return []
 
