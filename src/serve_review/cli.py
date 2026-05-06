@@ -22,8 +22,8 @@ DEFAULT_PORT = 8567
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
 @click.option(
     "--host",
-    default="127.0.0.1",
-    help="Host to bind to (default loopback; non-loopback requires HTTPS).",
+    default="0.0.0.0",
+    help="Host to bind to.",
 )
 @click.option("--base", default=None, help="Base ref for manual diff (instead of hook stdin).")
 @click.option("--head", default=None, help="Head ref for manual diff (defaults to HEAD).")
@@ -69,8 +69,8 @@ def main(
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
 @click.option(
     "--host",
-    default="127.0.0.1",
-    help="Host to bind to (default loopback; non-loopback requires HTTPS).",
+    default="0.0.0.0",
+    help="Host to bind to.",
 )
 @click.option(
     "--standalone",
@@ -114,8 +114,8 @@ def hook_cmd(
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
 @click.option(
     "--host",
-    default="127.0.0.1",
-    help="Host to bind to (default loopback; non-loopback requires HTTPS).",
+    default="0.0.0.0",
+    help="Host to bind to.",
 )
 @click.option(
     "--standalone",
@@ -349,8 +349,8 @@ def daemon() -> None:
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to bind the daemon to.")
 @click.option(
     "--host",
-    default="127.0.0.1",
-    help="Host to bind the daemon to (default loopback; non-loopback requires HTTPS).",
+    default="0.0.0.0",
+    help="Host to bind the daemon to.",
 )
 @click.option(
     "--disable-tailscale",

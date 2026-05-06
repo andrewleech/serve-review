@@ -428,15 +428,6 @@ class TestHealth:
 class TestRunDaemonHelpers:
     """Tests for helpers in run_daemon that we can exercise without uvicorn."""
 
-    def test_is_loopback_host(self) -> None:
-        from serve_review.daemon import _is_loopback_host
-
-        assert _is_loopback_host("127.0.0.1") is True
-        assert _is_loopback_host("::1") is True
-        assert _is_loopback_host("localhost") is True
-        assert _is_loopback_host("0.0.0.0") is False
-        assert _is_loopback_host("192.168.1.5") is False
-
     def test_serve_review_logging_is_idempotent(self) -> None:
         import logging
 

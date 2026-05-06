@@ -50,7 +50,7 @@ State lives in `~/.cache/serve-review/`:
 - `decisions/{hash}.json` — cached approve/deny decisions, swept after 48h
 - `daemon.log` — uvicorn output, truncated on restart if over 10 MiB
 
-By default the daemon binds to `127.0.0.1` (loopback only). To make it reachable from another device on your network or Tailnet, pass `--host 0.0.0.0` (or a specific interface IP). The daemon refuses to start on a non-loopback host without HTTPS configured; use the Tailscale auto-provisioning below or `SERVE_REVIEW_SSL_CERT` / `SERVE_REVIEW_SSL_KEY`.
+By default the daemon binds to `0.0.0.0` so devices on your local network or Tailnet can reach it. The trust boundary is your network — there is no auth layer. Pass `--host 127.0.0.1` to bind loopback only. Enabling HTTPS (see below) is recommended whenever the daemon is reachable from another device.
 
 If the daemon can't be reached for any reason, the hook falls back to a one-shot standalone server on the same port (or an ephemeral one if the port is taken). The `--standalone` flag bypasses the daemon entirely.
 
@@ -135,8 +135,8 @@ Installable as a PWA on Android Chrome. Static port means you can pin it to your
 # Change the port (default 8567); a separate daemon runs per port
 serve-review --port 9000
 
-# Bind to a specific interface (default 127.0.0.1 loopback; non-loopback requires HTTPS)
-serve-review --host 0.0.0.0
+# Bind to a specific interface (default 0.0.0.0; trust boundary is your network)
+serve-review --host 127.0.0.1
 
 # One-shot standalone (no daemon, no cache, blocks the calling process)
 serve-review --standalone

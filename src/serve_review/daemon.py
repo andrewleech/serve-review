@@ -586,11 +586,6 @@ def _rotate_log_if_oversized(path: Path) -> None:
         f.truncate(0)
 
 
-def _is_loopback_host(host: str) -> bool:
-    """Return True if ``host`` resolves to a loopback address."""
-    return host in ("127.0.0.1", "::1", "localhost")
-
-
 def _configure_serve_review_logging() -> None:
     """Attach a stderr handler to the serve_review package logger.
 
@@ -680,19 +675,6 @@ def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> N
 
     scheme = "https" if (ssl_cert and ssl_key) else "http"
 
-    # Refuse to bind a non-loopback host without HTTPS: the daemon has no
-    # auth on its approve/deny endpoints, so plaintext on the LAN/Tailnet is
-    # never the right default.
-    if not _is_loopback_host(host) and scheme != "https":
-        print(
-            f"refusing to bind {host} over plaintext HTTP. "
-            "Either bind 127.0.0.1 (default) or configure HTTPS via Tailscale "
-            "or SERVE_REVIEW_SSL_CERT/SERVE_REVIEW_SSL_KEY before binding "
-            "a non-loopback host.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     server = DaemonServer(host, port, scheme=scheme, cert_manager=cert_manager)
 
     # Write scheme sidecar before binding uvicorn so a bind failure leaves
@@ -721,7 +703,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(prog="python -m serve_review.daemon")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8567)
     parser.add_argument(
         "--disable-tailscale",
