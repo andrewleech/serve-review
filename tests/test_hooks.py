@@ -81,7 +81,7 @@ class TestInstallPrePushHook:
         hook_path.write_text(original_body)
         hook_path.chmod(0o755)
 
-        result = install_pre_push_hook(force=False)
+        result = install_pre_push_hook()
         assert result.chained is True
         assert backup_path.exists()
         assert backup_path.read_text() == original_body
@@ -94,7 +94,7 @@ class TestInstallPrePushHook:
         hook_path.write_text(original_body)
         hook_path.chmod(0o755)
 
-        result = install_pre_push_hook(force=True)
+        result = install_pre_push_hook()
         assert result.chained is True
         assert backup_path.exists()
         assert backup_path.read_text() == original_body
@@ -120,7 +120,7 @@ class TestInstallPrePushHook:
         hook_path.write_text("#!/bin/sh\nexit 0\n")
         hook_path.chmod(0o755)
 
-        result = install_pre_push_hook(force=True)
+        result = install_pre_push_hook()
         assert result.chained is True
         rendered = hook_path.read_text()
         # Run bash -n on the rendered script to check syntactic validity.
@@ -136,7 +136,7 @@ class TestInstallPrePushHook:
         first = install_pre_push_hook()
         assert first.chained is False
         # Second install without --force should be allowed (overwriting our own).
-        second = install_pre_push_hook(force=False)
+        second = install_pre_push_hook()
         assert second.chained is False
         assert second.path == first.path
         assert _SERVE_REVIEW_MARKER in second.path.read_text()
@@ -158,7 +158,7 @@ class TestUninstallPrePushHook:
         hook_path.write_text(original_body)
         hook_path.chmod(0o755)
 
-        install_pre_push_hook(force=True)
+        install_pre_push_hook()
         backup_path = git_repo / ".git" / "hooks" / "pre-push.original"
         assert backup_path.exists()
 

@@ -412,12 +412,59 @@ class TestHealth:
         assert data["port"] == 8567
         assert data["queued"] == 0
 
+    async def test_health_includes_scheme(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/health")
+        data = resp.json()
+        assert data["scheme"] in ("http", "https")
+
     async def test_health_reflects_queued_count(
         self, client: AsyncClient, sample_review: ReviewRequest
     ) -> None:
         await _submit(client, sample_review)
         resp = await client.get("/api/health")
         assert resp.json()["queued"] == 1
+
+
+class TestRunDaemonHelpers:
+    """Tests for helpers in run_daemon that we can exercise without uvicorn."""
+
+    def test_is_loopback_host(self) -> None:
+        from serve_review.daemon import _is_loopback_host
+
+        assert _is_loopback_host("127.0.0.1") is True
+        assert _is_loopback_host("::1") is True
+        assert _is_loopback_host("localhost") is True
+        assert _is_loopback_host("0.0.0.0") is False
+        assert _is_loopback_host("192.168.1.5") is False
+
+    def test_serve_review_logging_is_idempotent(self) -> None:
+        import logging
+
+        from serve_review.daemon import _configure_serve_review_logging
+
+        pkg_logger = logging.getLogger("serve_review")
+        before = len(pkg_logger.handlers)
+        _configure_serve_review_logging()
+        _configure_serve_review_logging()
+        after = len(pkg_logger.handlers)
+        # Should add at most one handler regardless of how many times called.
+        assert after - before <= 1
+
+
+class TestDaemonServerScheme:
+    """DaemonServer surfaces the configured scheme via /api/health."""
+
+    async def test_https_scheme_in_health(self) -> None:
+        from httpx import ASGITransport
+        from httpx import AsyncClient as _AC
+
+        from serve_review.daemon import DaemonServer as _DS
+
+        server = _DS(host="127.0.0.1", port=8567, scheme="https")
+        transport = ASGITransport(app=server.app)
+        async with _AC(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/api/health")
+            assert resp.json()["scheme"] == "https"
 
 
 class TestCacheReplayDefense:

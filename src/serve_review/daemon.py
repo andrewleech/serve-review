@@ -18,6 +18,7 @@ import atexit
 import contextlib
 import importlib.resources
 import json
+import logging
 import os
 import sys
 import time
@@ -38,6 +39,8 @@ from serve_review.models import (
     ReviewRequest,
     compute_diff_hash,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -61,6 +64,10 @@ _SSE_KEEPALIVE_SECONDS = 20.0
 # means most entries expire on their own; this catches accumulation in
 # long-running daemons.
 _CACHE_SWEEP_SECONDS = 3600.0
+
+# How often the cert renewal loop runs. 6h is short enough to recover from a
+# missed renewal window and long enough that the parse/check cost is negligible.
+_CERT_RENEWAL_SECONDS = 6 * 3600.0
 
 # Maximum events buffered per browser SSE subscriber. If a subscriber falls
 # this far behind we drop oldest events rather than block the publisher.
@@ -301,7 +308,11 @@ class DaemonServer:
     """Owns the Starlette app and the in-memory ``ReviewQueue``."""
 
     def __init__(
-        self, host: str, port: int, scheme: str = "http", cert_manager: CertificateManager | None = None
+        self,
+        host: str,
+        port: int,
+        scheme: str = "http",
+        cert_manager: CertificateManager | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -364,29 +375,35 @@ class DaemonServer:
                 cache.cleanup_stale_decisions()
 
     async def _cert_renewal_loop(self) -> None:
-        """Check certificate renewal every 24 hours. Runs for the daemon's life."""
-        import logging
+        """Check certificate renewal periodically. Runs for the daemon's life.
 
-        logger = logging.getLogger(__name__)
-
+        Checks first then sleeps so a daemon started with a near-expiry cert
+        does not wait a full cycle before renewing. Note: a successful renewal
+        writes new files to disk but uvicorn's SSL context was loaded once at
+        startup, so the daemon must be restarted for clients to be served the
+        new cert. The renewal loop logs a warning to make this visible.
+        """
         if not self.cert_manager:
             return
 
         while True:
             try:
-                await asyncio.sleep(86400)  # 24 hours
-            except asyncio.CancelledError:
-                return
-
-            try:
                 if self.cert_manager.check_renewal_needed():
                     logger.info("Certificate renewal check triggered renewal")
                     if self.cert_manager.renew():
-                        logger.info("Certificate renewed successfully")
+                        logger.warning(
+                            "Certificate renewed; restart the daemon to serve "
+                            "the new cert (uvicorn caches SSL context at startup)"
+                        )
                     else:
-                        logger.warning("Certificate renewal failed, will retry in 24h")
+                        logger.warning("Certificate renewal failed, will retry next cycle")
             except Exception:
                 logger.exception("Error in certificate renewal loop")
+
+            try:
+                await asyncio.sleep(_CERT_RENEWAL_SECONDS)
+            except asyncio.CancelledError:
+                return
 
     async def _index(self, request: Request) -> Response:
         static_dir = importlib.resources.files("serve_review").joinpath("static")
@@ -569,18 +586,45 @@ def _rotate_log_if_oversized(path: Path) -> None:
         f.truncate(0)
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Return True if ``host`` resolves to a loopback address."""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _configure_serve_review_logging() -> None:
+    """Attach a stderr handler to the serve_review package logger.
+
+    Idempotent: if the handler is already attached we don't double up. We
+    deliberately avoid touching the root logger so uvicorn (and any caller
+    that imports us) can configure their own logging without conflict.
+    """
+    pkg_logger = logging.getLogger("serve_review")
+    if any(getattr(h, "_serve_review_handler", False) for h in pkg_logger.handlers):
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    handler._serve_review_handler = True  # type: ignore[attr-defined]
+    pkg_logger.addHandler(handler)
+    pkg_logger.setLevel(logging.INFO)
+
+
 def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> None:
     """Start the daemon process. Blocks until uvicorn exits.
 
     Refuses to start if a live PID file already claims this port. On clean
-    shutdown the PID file is removed via ``atexit``; uvicorn handles SIGINT
-    and SIGTERM itself.
+    shutdown the PID file and scheme sidecar are removed via ``atexit``;
+    uvicorn handles SIGINT and SIGTERM itself.
 
     Attempts to provision TLS certificates via Tailscale if available,
     otherwise falls back to HTTP. Can also be configured via SERVE_REVIEW_SSL_CERT
     and SERVE_REVIEW_SSL_KEY environment variables.
+
+    Refuses to start on a non-loopback host without HTTPS configured: an
+    unauthenticated daemon listening on the LAN/Tailnet would let any peer
+    list queued diffs and approve/deny pushes.
     """
-    import logging
     import uvicorn
 
     from serve_review.cert_manager import CertificateManager
@@ -593,12 +637,9 @@ def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> N
             "yes",
         )
 
-    # Configure logging so cert_manager telemetry reaches daemon.log (via stderr)
-    logging.basicConfig(
-        level=logging.INFO,
-        stream=sys.stderr,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    # Configure logging on the serve_review package logger only; the root
+    # logger and uvicorn's own configuration are left untouched.
+    _configure_serve_review_logging()
 
     existing = cache.read_pid_file(port)
     if existing is not None:
@@ -612,20 +653,20 @@ def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> N
     cache.cleanup_stale_decisions()
     cache.write_pid_file(port, os.getpid())
     atexit.register(cache.remove_pid_file, port)
+    atexit.register(lambda: cache.scheme_file(port).unlink(missing_ok=True))
 
     # Attempt to provision TLS certificates via Tailscale
-    cert_manager = CertificateManager(cache.CACHE_DIR, disable=disable_tailscale)
-    if cert_manager.should_provision():
-        if not cert_manager.provision():
-            if cert_manager.detector.is_connected():
-                print(
-                    "warning: Tailscale certificate provisioning failed. "
-                    "Check daemon.log for details. "
-                    "You may need to run: sudo tailscale set --operator=$USER",
-                    file=sys.stderr,
-                )
-            else:
-                print("warning: Tailscale not connected, using HTTP", file=sys.stderr)
+    cert_manager = CertificateManager(cache.certs_dir(), disable=disable_tailscale)
+    if cert_manager.should_provision() and not cert_manager.provision():
+        if cert_manager.detector.is_connected():
+            print(
+                "warning: Tailscale certificate provisioning failed. "
+                "Check daemon.log for details. "
+                "You may need to run: sudo tailscale set --operator=$USER",
+                file=sys.stderr,
+            )
+        else:
+            print("warning: Tailscale not connected, using HTTP", file=sys.stderr)
 
     # Determine SSL configuration: env vars take precedence, then provisioned certs, else HTTP
     ssl_cert = os.getenv("SERVE_REVIEW_SSL_CERT")
@@ -638,11 +679,29 @@ def run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> N
             ssl_key = str(key_path)
 
     scheme = "https" if (ssl_cert and ssl_key) else "http"
+
+    # Refuse to bind a non-loopback host without HTTPS: the daemon has no
+    # auth on its approve/deny endpoints, so plaintext on the LAN/Tailnet is
+    # never the right default.
+    if not _is_loopback_host(host) and scheme != "https":
+        print(
+            f"refusing to bind {host} over plaintext HTTP. "
+            "Either bind 127.0.0.1 (default) or configure HTTPS via Tailscale "
+            "or SERVE_REVIEW_SSL_CERT/SERVE_REVIEW_SSL_KEY before binding "
+            "a non-loopback host.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     server = DaemonServer(host, port, scheme=scheme, cert_manager=cert_manager)
 
-    # Write scheme to sidecar file so clients know the transport
+    # Write scheme sidecar before binding uvicorn so a bind failure leaves
+    # no stale file behind. Use atomic temp-file + rename for safety.
     try:
-        cache.scheme_file(port).write_text(scheme)
+        sf = cache.scheme_file(port)
+        tmp = sf.with_suffix(sf.suffix + ".tmp")
+        tmp.write_text(scheme)
+        tmp.replace(sf)
     except Exception:
         pass  # Non-fatal if we can't write the file
 
@@ -662,7 +721,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(prog="python -m serve_review.daemon")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8567)
     parser.add_argument(
         "--disable-tailscale",

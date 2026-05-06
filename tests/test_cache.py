@@ -324,7 +324,9 @@ class TestListDaemons:
         # And the dead one's file was cleaned up.
         assert not (isolated_cache / "daemon-9000.pid").exists()
 
-    def test_ignores_unrelated_files(self, isolated_cache: Path, mock_serve_review_process: None) -> None:
+    def test_ignores_unrelated_files(
+        self, isolated_cache: Path, mock_serve_review_process: None
+    ) -> None:
         (isolated_cache / "not-a-pid.txt").write_text("hello")
         (isolated_cache / "daemon-abc.pid").write_text("123")  # non-numeric port
         cache.write_pid_file(8567, os.getpid())

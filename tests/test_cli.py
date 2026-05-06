@@ -165,22 +165,23 @@ class TestInstallHookCmd:
             chained = True
             message = "Original hook backed up to /tmp/fake/.git/hooks/pre-push.original"
 
-        def fake_install(force: bool = False) -> FakeResult:
-            captured["force"] = force
+        def fake_install() -> FakeResult:
+            captured["called"] = True
             return FakeResult()
 
         monkeypatch.setattr("serve_review.hooks.install_pre_push_hook", fake_install)
         runner = CliRunner()
+        # --force is accepted as a deprecated no-op flag.
         result = runner.invoke(cli.main, ["install-hook", "--force"])
         assert result.exit_code == 0, result.output
-        assert captured["force"] is True
+        assert captured["called"] is True
         assert "Original hook backed up to" in result.output
 
     def test_install_hook_file_exists_error_exits_one(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def fake_install(force: bool = False) -> object:
-            raise FileExistsError("Pre-push hook already exists at /tmp/x. Use --force.")
+        def fake_install() -> object:
+            raise FileExistsError("Pre-push hook already exists at /tmp/x.")
 
         monkeypatch.setattr("serve_review.hooks.install_pre_push_hook", fake_install)
         runner = CliRunner()
@@ -290,3 +291,75 @@ class TestQueryQueueDepth:
         sock.close()
 
         assert cli._query_queue_depth(port) is None
+
+
+class TestCertCli:
+    """Tests for the cert subcommand group."""
+
+    def test_cert_status_no_cert(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["cert", "status"])
+        assert result.exit_code == 0
+        assert "No certificate provisioned." in result.output
+
+    def test_cert_renew_fails_when_tailscale_disconnected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from serve_review.cert_manager import TailscaleDetector
+
+        monkeypatch.setattr(TailscaleDetector, "is_connected", lambda self: False)
+
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["cert", "renew"])
+        assert result.exit_code == 1
+        assert "Tailscale is not connected" in result.output
+
+    def test_cert_forget_no_cache(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["cert", "forget"])
+        assert result.exit_code == 0
+        assert "No certificate cache found." in result.output
+
+    def test_cert_forget_removes_files(self, tmp_path: Path) -> None:
+        certs_dir = tmp_path / "certs"
+        certs_dir.mkdir()
+        (certs_dir / "host.ts.net.crt").write_text("dummy")
+        (certs_dir / "host.ts.net.key").write_text("dummy")
+
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["cert", "forget"])
+        assert result.exit_code == 0
+        assert "Deleted certificate cache" in result.output
+        assert not certs_dir.exists()
+
+    def test_cert_forget_refuses_symlink(self, tmp_path: Path) -> None:
+        # Create a symlink at the certs_dir path; cert forget should refuse.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        certs_dir = tmp_path / "certs"
+        certs_dir.symlink_to(elsewhere)
+
+        runner = CliRunner()
+        result = runner.invoke(cli.main, ["cert", "forget"])
+        assert result.exit_code == 1
+        assert "Refusing to follow symlink" in result.output
+
+
+class TestDaemonStartFlag:
+    """Tests for daemon start --disable-tailscale flag plumbing."""
+
+    def test_disable_tailscale_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run_daemon(
+            host: str, port: int, disable_tailscale: bool | None = None
+        ) -> None:
+            captured["disable_tailscale"] = disable_tailscale
+
+        monkeypatch.setattr("serve_review.daemon.run_daemon", fake_run_daemon)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.main, ["daemon", "start", "--disable-tailscale"]
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["disable_tailscale"] is True

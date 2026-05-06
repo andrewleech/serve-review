@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import signal
+import ssl
 import subprocess
 import sys
 import time
@@ -64,21 +65,34 @@ def get_health(port: int) -> dict[str, Any]:
 
 
 def _get_daemon_url(port: int, path: str = "") -> str:
-    """Get the correct URL for the daemon, detecting scheme from sidecar file."""
+    """Get the correct URL for the daemon, detecting scheme from sidecar file.
+
+    The scheme value is validated against an allowlist {"http", "https"};
+    an empty, missing, or unrecognised file falls back to "http" so a partial
+    write or stale file can never produce an invalid URL like ``://127.0.0.1``.
+    """
     scheme = "http"
     try:
         scheme_file = cache.scheme_file(port)
         if scheme_file.exists():
-            scheme = scheme_file.read_text().strip()
+            raw = scheme_file.read_text().strip()
+            if raw in ("http", "https"):
+                scheme = raw
     except Exception:
         pass
     return f"{scheme}://127.0.0.1:{port}{path}"
 
 
-def _get_https_context() -> Any:
-    """Create SSL context for loopback HTTPS (no hostname verification)."""
-    import ssl
+def _get_https_context() -> ssl.SSLContext:
+    """Create SSL context for loopback HTTPS.
 
+    Hostname and certificate verification are disabled because the cert is
+    issued to the Tailscale FQDN (``*.ts.net``) but the client always connects
+    to ``127.0.0.1``. The trust boundary is the loopback socket itself: if an
+    attacker can intercept loopback traffic on this machine, they already have
+    user-level access. ``_get_daemon_url`` enforces the loopback constraint by
+    hardcoding the host.
+    """
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -88,10 +102,12 @@ def _get_https_context() -> Any:
 def daemon_is_running(port: int) -> bool:
     """Return True if a healthy daemon is listening on ``port``.
 
-    Uses the PID file as a fast-path check; a stale PID file is cleaned up by
-    ``cache.read_pid_file`` itself. A live PID file alone is not sufficient,
+    Fast-path: if no PID file exists, return False without making an HTTP call.
+    A live PID file alone is not sufficient (a hung daemon may not respond),
     so we also probe ``/api/health`` with a short timeout.
     """
+    if cache.read_pid_file(port) is None:
+        return False
     try:
         get_health(port)
         return True

@@ -50,7 +50,7 @@ State lives in `~/.cache/serve-review/`:
 - `decisions/{hash}.json` — cached approve/deny decisions, swept after 48h
 - `daemon.log` — uvicorn output, truncated on restart if over 10 MiB
 
-By default the daemon binds to `0.0.0.0` so devices on your local network or Tailnet can reach it. The trust boundary is your network — there is no auth layer. Pass `--host 127.0.0.1` to bind loopback only.
+By default the daemon binds to `127.0.0.1` (loopback only). To make it reachable from another device on your network or Tailnet, pass `--host 0.0.0.0` (or a specific interface IP). The daemon refuses to start on a non-loopback host without HTTPS configured; use the Tailscale auto-provisioning below or `SERVE_REVIEW_SSL_CERT` / `SERVE_REVIEW_SSL_KEY`.
 
 If the daemon can't be reached for any reason, the hook falls back to a one-shot standalone server on the same port (or an ephemeral one if the port is taken). The `--standalone` flag bypasses the daemon entirely.
 
@@ -135,8 +135,8 @@ Installable as a PWA on Android Chrome. Static port means you can pin it to your
 # Change the port (default 8567); a separate daemon runs per port
 serve-review --port 9000
 
-# Bind to a specific interface (default 0.0.0.0; trust boundary is your network)
-serve-review --host 127.0.0.1
+# Bind to a specific interface (default 127.0.0.1 loopback; non-loopback requires HTTPS)
+serve-review --host 0.0.0.0
 
 # One-shot standalone (no daemon, no cache, blocks the calling process)
 serve-review --standalone
@@ -188,6 +188,10 @@ serve-review daemon start
 ```
 
 These take precedence over auto-provisioning. The daemon falls back to HTTP if no certificates are configured and auto-provisioning is disabled or unavailable.
+
+### Loopback verification
+
+Browsers loading the review UI at `https://machine.ts.net:8567` perform normal certificate verification (the cert is signed via Tailscale's Let's Encrypt chain). The git pre-push hook, however, talks to `https://127.0.0.1:8567` because all daemon clients connect via loopback; the cert is issued for the `*.ts.net` hostname so verification would always fail. The hook client therefore skips certificate verification on the loopback connection. The trust boundary is the loopback socket itself: an attacker who can intercept loopback traffic on this machine already has user-level access.
 
 ### Certificate management
 

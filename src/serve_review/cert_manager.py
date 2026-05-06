@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+# Re-query Tailscale connectivity at most every NEGATIVE_CACHE_TTL seconds when
+# the previous result was "not connected". Avoids permanent stuck state when
+# the daemon starts before Tailscale comes up.
+_NEGATIVE_CACHE_TTL = 300.0
 
 
 class TailscaleDetector:
@@ -30,7 +36,7 @@ class TailscaleDetector:
     ) -> None:
         self._installed: bool | None = None
         self._status_data: dict[str, Any] | None = None
-        self._status_tried: bool = False
+        self._status_last_attempt: float = 0.0
         self.runner = runner or subprocess.run
 
     def is_installed(self) -> bool:
@@ -42,11 +48,19 @@ class TailscaleDetector:
         return self._installed
 
     def _get_status(self) -> dict[str, Any] | None:
-        """Fetch tailscale status once and cache it."""
-        if self._status_tried:
+        """Fetch tailscale status, caching positive results and TTL'ing negatives."""
+        # Positive result: cache for the lifetime of the detector — Tailscale
+        # connectivity rarely flaps once established.
+        if self._status_data is not None:
             return self._status_data
 
-        self._status_tried = True
+        # Negative result: re-check after _NEGATIVE_CACHE_TTL seconds so a daemon
+        # started before Tailscale comes up will eventually pick up connectivity.
+        now = time.monotonic()
+        if self._status_last_attempt and (now - self._status_last_attempt) < _NEGATIVE_CACHE_TTL:
+            return None
+
+        self._status_last_attempt = now
 
         if not self.is_installed():
             return None
@@ -104,16 +118,15 @@ class CertificateManager:
 
     def __init__(
         self,
-        cache_dir: Path,
+        certs_dir: Path,
         disable: bool = False,
         detector: TailscaleDetector | None = None,
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         renewal_days_threshold: int = 30,
     ) -> None:
-        self.cache_dir = cache_dir
+        self.certs_dir = certs_dir
         self.disable = disable
         self.detector = detector or TailscaleDetector(runner=runner)
-        self.certs_dir = cache_dir / "certs"
         self.renewal_days_threshold = renewal_days_threshold
         self.runner = runner or subprocess.run
         self._hostname: str | None = None
@@ -155,6 +168,8 @@ class CertificateManager:
         """Provision new TLS certificates using tailscale cert command.
 
         Returns True on success, False on failure. All errors are logged.
+        Validates the resulting cert/key parse correctly before installing
+        atomically; a malformed payload leaves the previous valid pair intact.
         """
         hostname = self.detector.get_hostname()
         if not hostname:
@@ -179,6 +194,9 @@ class CertificateManager:
         try:
             logger.info("Provisioning Tailscale certificate for %s", hostname)
 
+            # umask 0o077 protects key/cert during the window between Tailscale
+            # writing them and our chmod below. The cert is widened to 0o644
+            # afterwards (public certs are world-readable); the key stays 0o600.
             old_umask = os.umask(0o077)
             try:
                 result = self.runner(
@@ -212,6 +230,11 @@ class CertificateManager:
                 self._cleanup_temp_files(hostname, pid)
                 return False
 
+            if not _validate_pem_pair(crt_temp, key_temp):
+                logger.error("Certificate or key failed to parse; refusing to install")
+                self._cleanup_temp_files(hostname, pid)
+                return False
+
             crt_temp.chmod(0o644)
             key_temp.chmod(0o600)
 
@@ -226,6 +249,8 @@ class CertificateManager:
             except OSError:
                 pass
 
+            self._cleanup_stale_certs(hostname)
+
             logger.info("Successfully provisioned certificate for %s", hostname)
             return True
 
@@ -238,12 +263,22 @@ class CertificateManager:
             self._cleanup_temp_files(hostname, pid)
             return False
 
+    def _cleanup_stale_certs(self, current_hostname: str) -> None:
+        """Remove any cert/key pairs that don't match the current hostname.
+
+        Useful after a Tailscale hostname change so the daemon doesn't pick up
+        an old cert via filesystem-order glob iteration.
+        """
+        for path in list(self.certs_dir.glob("*.crt")) + list(self.certs_dir.glob("*.key")):
+            if path.stem != current_hostname:
+                path.unlink(missing_ok=True)
+
     def check_renewal_needed(self) -> bool:
         """Check if the current certificate needs renewal.
 
         Returns True if the cert expires within the renewal threshold
-        (default 30 days). Returns False if the cert doesn't exist or
-        cannot be read.
+        (default 30 days) or has already expired. Returns False if the cert
+        doesn't exist or cannot be read.
         """
         hostname = self._hostname or self.detector.get_hostname()
         if not hostname:
@@ -256,8 +291,8 @@ class CertificateManager:
         try:
             # Import here to defer dependency check
             try:
-                from cryptography import x509  # type: ignore[import-not-found]
-                from cryptography.hazmat.backends import (  # type: ignore[import-not-found]
+                from cryptography import x509
+                from cryptography.hazmat.backends import (
                     default_backend,
                 )
             except ImportError as import_err:
@@ -273,8 +308,11 @@ class CertificateManager:
             expiry = cert.not_valid_after_utc
 
             now = datetime.now(UTC)
-            renewal_threshold = now + timedelta(days=self.renewal_days_threshold)
+            if expiry <= now:
+                logger.info("Certificate already expired; renewal needed")
+                return True
 
+            renewal_threshold = now + timedelta(days=self.renewal_days_threshold)
             needs_renewal: bool = expiry < renewal_threshold
             if needs_renewal:
                 days_left = (expiry - now).days
@@ -297,12 +335,22 @@ class CertificateManager:
     def get_cert_paths(self) -> tuple[Path | None, Path | None]:
         """Return (cert_path, key_path) if they exist, otherwise (None, None).
 
-        Scans the certs directory for any .crt file, allowing operation even
-        if Tailscale is offline (e.g., on restart before network is up).
-        Also caches the hostname to avoid re-querying Tailscale.
+        Prefers the cert matching the current Tailscale hostname when available;
+        falls back to the first matching pair found via glob (allowing operation
+        when Tailscale is offline). Caches the hostname so callers don't need to
+        re-query Tailscale.
         """
         if not self.certs_dir.exists():
             return None, None
+
+        # Prefer the current Tailscale hostname when reachable.
+        hostname = self.detector.get_hostname()
+        if hostname:
+            crt_path = self.certs_dir / f"{hostname}.crt"
+            key_path = self.certs_dir / f"{hostname}.key"
+            if crt_path.exists() and key_path.exists():
+                self._hostname = hostname
+                return crt_path, key_path
 
         for crt_path in self.certs_dir.glob("*.crt"):
             basename = crt_path.stem
@@ -312,3 +360,28 @@ class CertificateManager:
                 return crt_path, key_path
 
         return None, None
+
+
+def _validate_pem_pair(crt_path: Path, key_path: Path) -> bool:
+    """Best-effort parse of the cert and key. Returns False if cryptography
+    is unavailable or either file fails to load."""
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.backends import (
+            default_backend,
+        )
+        from cryptography.hazmat.primitives import (
+            serialization,
+        )
+    except ImportError:
+        # Without cryptography we can't validate; fall back to size checks.
+        return True
+
+    try:
+        x509.load_pem_x509_certificate(crt_path.read_bytes(), default_backend())
+        serialization.load_pem_private_key(
+            key_path.read_bytes(), password=None, backend=default_backend()
+        )
+    except Exception:
+        return False
+    return True

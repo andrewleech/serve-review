@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import urllib.error
-import urllib.request
 from typing import TYPE_CHECKING
 
 import click
@@ -22,7 +20,11 @@ DEFAULT_PORT = 8567
 
 @click.group(invoke_without_command=True, context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
-@click.option("--host", default="0.0.0.0", help="Host to bind to.")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Host to bind to (default loopback; non-loopback requires HTTPS).",
+)
 @click.option("--base", default=None, help="Base ref for manual diff (instead of hook stdin).")
 @click.option("--head", default=None, help="Head ref for manual diff (defaults to HEAD).")
 @click.option(
@@ -65,7 +67,11 @@ def main(
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
 )
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
-@click.option("--host", default="0.0.0.0", help="Host to bind to.")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Host to bind to (default loopback; non-loopback requires HTTPS).",
+)
 @click.option(
     "--standalone",
     is_flag=True,
@@ -106,7 +112,11 @@ def hook_cmd(
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
 )
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
-@click.option("--host", default="0.0.0.0", help="Host to bind to.")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Host to bind to (default loopback; non-loopback requires HTTPS).",
+)
 @click.option(
     "--standalone",
     is_flag=True,
@@ -294,7 +304,7 @@ def _resolve_standalone_port(host: str, preferred: int) -> int:
 
 
 @main.command()
-@click.option("--force", is_flag=True, help="Deprecated; auto-wrapping is now the default.")
+@click.option("--force", is_flag=True, hidden=True)
 def install_hook(force: bool) -> None:
     """Install git pre-push hook in the current repository.
 
@@ -302,10 +312,13 @@ def install_hook(force: bool) -> None:
     so both hooks run: the original hook first (for lint/format), then
     serve-review for human review.
     """
+    # --force is accepted for backward compat but ignored; auto-wrapping is
+    # now the default behavior.
+    del force
     from serve_review.hooks import install_pre_push_hook
 
     try:
-        result = install_pre_push_hook(force=force)
+        result = install_pre_push_hook()
         click.echo(f"Installed pre-push hook at {result.path}")
         if result.chained:
             click.echo(f"  {result.message}")
@@ -334,7 +347,11 @@ def daemon() -> None:
 
 @daemon.command("start")
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to bind the daemon to.")
-@click.option("--host", default="0.0.0.0", help="Host to bind the daemon to.")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Host to bind the daemon to (default loopback; non-loopback requires HTTPS).",
+)
 @click.option(
     "--disable-tailscale",
     is_flag=True,
@@ -385,6 +402,9 @@ def daemon_status() -> None:
 
     click.echo(f"{len(running)} daemon(s) running:")
     for port, pid in running:
+        # We don't know the actual bind host here, so probe both names. Using
+        # 0.0.0.0 makes _build_review_url prefer the Tailscale FQDN when
+        # available; if not, it falls back to the system hostname.
         url = _build_review_url("0.0.0.0", port)
         queued = _query_queue_depth(port)
         queued_str = f"{queued} review(s) queued" if queued is not None else "queue unavailable"
@@ -393,13 +413,11 @@ def daemon_status() -> None:
 
 def _query_queue_depth(port: int) -> int | None:
     """Return the daemon's queued-review count via /api/health, or None on error."""
-    url = f"http://127.0.0.1:{port}/api/health"
+    from serve_review.client import DaemonError, get_health
+
     try:
-        with urllib.request.urlopen(url, timeout=2.0) as resp:
-            if resp.status != 200:
-                return None
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        data = get_health(port)
+    except DaemonError:
         return None
     queued = data.get("queued")
     if isinstance(queued, int):
@@ -407,9 +425,38 @@ def _query_queue_depth(port: int) -> int | None:
     return None
 
 
+def _configure_cert_cli_logging() -> None:
+    """Attach a stderr handler to the serve_review logger for cert CLI commands.
+
+    cert_manager logs failure reasons through ``logging``; without a handler
+    those messages would never reach the user. We attach the same handler the
+    daemon uses so the user sees actionable error context (e.g. "Tailscale not
+    connected", "tailscale cert failed: Access denied").
+    """
+    import logging
+
+    pkg_logger = logging.getLogger("serve_review")
+    if any(getattr(h, "_serve_review_handler", False) for h in pkg_logger.handlers):
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(levelname)s: %(message)s")
+    )
+    handler._serve_review_handler = True  # type: ignore[attr-defined]
+    pkg_logger.addHandler(handler)
+    pkg_logger.setLevel(logging.INFO)
+
+
 @main.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cert() -> None:
-    """Manage TLS certificates."""
+    """Manage TLS certificates.
+
+    Subcommands:
+      status  Show details of the currently-provisioned certificate.
+      renew   Force a renewal via tailscale cert.
+      forget  Remove cached certificates so the next daemon start re-provisions.
+    """
+    _configure_cert_cli_logging()
 
 
 @cert.command("status")
@@ -421,7 +468,7 @@ def cert_status(port: int) -> None:
     from serve_review import cache
     from serve_review.cert_manager import CertificateManager
 
-    cert_manager = CertificateManager(cache.CACHE_DIR)
+    cert_manager = CertificateManager(cache.certs_dir())
     crt_path, key_path = cert_manager.get_cert_paths()
 
     if not crt_path or not key_path:
@@ -429,8 +476,8 @@ def cert_status(port: int) -> None:
         return
 
     try:
-        from cryptography import x509  # type: ignore[import-not-found]
-        from cryptography.hazmat.backends import default_backend  # type: ignore[import-not-found]
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
 
         with open(crt_path, "rb") as f:
             cert_data = f.read()
@@ -446,7 +493,9 @@ def cert_status(port: int) -> None:
         click.echo(f"Expires: {expiry.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         click.echo(f"Time remaining: {days_left}d {hours_left}h")
 
-        if days_left < 7:
+        if days_left < 0:
+            click.echo("warning: Certificate has already expired")
+        elif days_left < 7:
             click.echo("warning: Renewal imminent (< 7 days)")
         elif days_left < 30:
             click.echo("note: Renewal will occur within 30 days")
@@ -465,28 +514,56 @@ def cert_renew() -> None:
     from serve_review import cache
     from serve_review.cert_manager import CertificateManager
 
-    cert_manager = CertificateManager(cache.CACHE_DIR)
+    cert_manager = CertificateManager(cache.certs_dir())
+
+    # Surface specific failure reasons rather than the generic "renewal failed".
+    if not cert_manager.detector.is_connected():
+        click.echo(
+            "Certificate renewal failed: Tailscale is not connected. "
+            "Ensure 'tailscale up' has been run.",
+            err=True,
+        )
+        sys.exit(1)
 
     if cert_manager.renew():
         click.echo("Certificate renewed successfully.")
+        click.echo(
+            "Note: a running daemon must be restarted to serve the new cert "
+            "(uvicorn caches the SSL context at startup)."
+        )
     else:
-        click.echo("Certificate renewal failed. Check daemon logs.", err=True)
+        click.echo(
+            "Certificate renewal failed. See above for the underlying error. "
+            "If you see 'Access denied', run: sudo tailscale set --operator=$USER",
+            err=True,
+        )
+        sys.exit(1)
 
 
 @cert.command("forget")
 def cert_forget() -> None:
     """Delete cached certificates. Next daemon start will re-provision."""
-    import shutil
-
     from serve_review import cache
 
     certs_dir = cache.certs_dir()
+    if certs_dir.is_symlink():
+        click.echo(
+            f"Refusing to follow symlink at {certs_dir}; remove it manually if intended.",
+            err=True,
+        )
+        sys.exit(1)
+    files = list(certs_dir.glob("*")) if certs_dir.exists() else []
+    if not files:
+        click.echo("No certificate cache found.")
+        return
     try:
-        if certs_dir.exists():
-            shutil.rmtree(certs_dir)
-            click.echo(f"Deleted certificate cache at {certs_dir}")
-        else:
-            click.echo("No certificate cache found.")
+        # Remove individual files rather than rmtree to avoid traversing
+        # symlinks in subdirectories.
+        for path in files:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+        certs_dir.rmdir()
+        click.echo(f"Deleted certificate cache at {certs_dir}")
     except Exception as exc:
         click.echo(f"Error deleting certificate cache: {exc}", err=True)
 

@@ -67,6 +67,7 @@ def scheme_file(port: int) -> Path:
 
     Written by the daemon so clients know which transport to use.
     """
+    _ensure_dir(CACHE_DIR)
     return CACHE_DIR / f"daemon-{port}.scheme"
 
 

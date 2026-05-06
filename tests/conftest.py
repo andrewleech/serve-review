@@ -134,7 +134,9 @@ def _free_port() -> int:
 
 
 @pytest.fixture
-async def live_daemon() -> AsyncIterator[tuple[DaemonServer, int]]:
+async def live_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[DaemonServer, int]]:
     """Run a real uvicorn server in-process. Yields (server, port).
 
     The client speaks HTTP over a real loopback socket, so an ASGI transport
@@ -155,6 +157,9 @@ async def live_daemon() -> AsyncIterator[tuple[DaemonServer, int]]:
     # Mirror the real daemon's lifecycle: write a PID file so daemon_is_running
     # can find us. Use the test process's own PID, which is guaranteed alive
     # for the test duration and works in containers without an init at PID 1.
+    # The PID-validity check (_pid_is_serve_review) inspects /proc cmdline
+    # which won't reference serve_review during pytest; mock it to True.
+    monkeypatch.setattr(cache, "_pid_is_serve_review", lambda pid: True)
     cache.write_pid_file(port, os.getpid())
 
     try:

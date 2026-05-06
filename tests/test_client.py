@@ -58,6 +58,44 @@ def _run_in_thread(target, *args):  # type: ignore[no-untyped-def]
     return t
 
 
+class TestSchemeDetection:
+    """Tests for _get_daemon_url scheme allowlist and sidecar handling."""
+
+    def test_no_scheme_file_falls_back_to_http(self) -> None:
+        url = client._get_daemon_url(54321, "/api/health")
+        assert url == "http://127.0.0.1:54321/api/health"
+
+    def test_https_scheme_is_honored(self) -> None:
+        cache.scheme_file(54321).write_text("https")
+        url = client._get_daemon_url(54321, "/x")
+        assert url == "https://127.0.0.1:54321/x"
+
+    def test_empty_scheme_file_falls_back_to_http(self) -> None:
+        cache.scheme_file(54321).write_text("")
+        url = client._get_daemon_url(54321, "/x")
+        assert url == "http://127.0.0.1:54321/x"
+
+    def test_unrecognised_scheme_falls_back_to_http(self) -> None:
+        cache.scheme_file(54321).write_text("javascript")
+        url = client._get_daemon_url(54321, "/x")
+        assert url == "http://127.0.0.1:54321/x"
+
+    def test_scheme_value_is_stripped(self) -> None:
+        cache.scheme_file(54321).write_text("  https \n")
+        url = client._get_daemon_url(54321, "/x")
+        assert url == "https://127.0.0.1:54321/x"
+
+
+class TestHttpsContext:
+    def test_returns_ssl_context_with_verification_disabled(self) -> None:
+        import ssl
+
+        ctx = client._get_https_context()
+        assert isinstance(ctx, ssl.SSLContext)
+        assert ctx.check_hostname is False
+        assert ctx.verify_mode == ssl.CERT_NONE
+
+
 class TestDaemonIsRunning:
     def test_no_pid_file_returns_false(self) -> None:
         assert daemon_is_running(54321) is False

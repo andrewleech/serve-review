@@ -85,7 +85,7 @@ class HookInstallResult:
         self.message = message
 
 
-def install_pre_push_hook(force: bool = False) -> HookInstallResult:
+def install_pre_push_hook() -> HookInstallResult:
     """Install the pre-push hook script.
 
     If an existing hook is present:

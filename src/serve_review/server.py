@@ -116,7 +116,7 @@ class ReviewServer:
 async def run_server(
     review: ReviewRequest,
     port: int = 8567,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     refresh_fn: Callable[[], ReviewRequest] | None = None,
 ) -> ReviewDecision:
     """Start the review server, wait for a decision, then shut down."""
