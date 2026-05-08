@@ -41,7 +41,23 @@ def main(
     head: str | None,
     standalone: bool,
 ) -> None:
-    """Pre-push review gate with mobile-friendly web UI."""
+    """Pre-push review gate with mobile-friendly web UI.
+
+    Runs in the foreground and blocks until you approve or deny the review.
+    The review URL is printed to stderr on startup - do not background this
+    process, as the URL will be lost and the server will exit when the
+    terminal closes.
+
+    Examples:
+
+    \b
+      # Review current branch against its upstream
+      serve-review
+
+    \b
+      # Review a specific range
+      serve-review --base upstream/master --head my-branch
+    """
     if ctx.invoked_subcommand is not None:
         return
 

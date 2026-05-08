@@ -117,6 +117,8 @@ serve-review
 serve-review --base origin/main --head HEAD
 ```
 
+The command blocks in the foreground and prints the review URL to stderr. Do not background it with `&` - the URL output will be lost and the process will exit when the terminal closes.
+
 ## The review UI
 
 Dark-themed, mobile-first diff viewer on port 8567. Bundled Prism.js for syntax highlighting.
