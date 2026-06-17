@@ -618,3 +618,48 @@ class TestConcurrentReviews:
         assert decision_a.overall_comment == "a"
         assert decision_b.decision == Decision.DENY
         assert decision_b.overall_comment == "b"
+
+
+class TestCancel:
+    async def test_cancel_marks_orphaned_and_reaps(
+        self, daemon: DaemonServer, client: AsyncClient, sample_review: ReviewRequest
+    ) -> None:
+        review_id, _ = daemon.queue.submit(sample_review, _diff_hash(sample_review))
+
+        resp = await client.post(f"/api/queue/{review_id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "cancelled"}
+
+        item = daemon.queue.get_review(review_id)
+        assert item is not None
+        assert item.status == "orphaned"
+
+        for _ in range(40):
+            if daemon.queue.get_review(review_id) is None:
+                break
+            await asyncio.sleep(0.1)
+        assert daemon.queue.get_review(review_id) is None
+
+    async def test_cancel_nonexistent_returns_409(
+        self, client: AsyncClient
+    ) -> None:
+        resp = await client.post("/api/queue/no-such-id/cancel")
+        assert resp.status_code == 409
+
+    async def test_cancel_already_decided_returns_409(
+        self, daemon: DaemonServer, client: AsyncClient, sample_review: ReviewRequest
+    ) -> None:
+        review_id, _ = daemon.queue.submit(sample_review, _diff_hash(sample_review))
+        daemon.queue.decide(review_id, ReviewDecision(decision=Decision.APPROVE))
+        resp = await client.post(f"/api/queue/{review_id}/cancel")
+        assert resp.status_code == 409
+
+    async def test_cancel_wakes_wait_for_decision(
+        self, daemon: DaemonServer, sample_review: ReviewRequest
+    ) -> None:
+        review_id, _ = daemon.queue.submit(sample_review, _diff_hash(sample_review))
+        wait_task = asyncio.create_task(daemon.queue.wait_for_decision(review_id))
+        await asyncio.sleep(0.01)
+        daemon.queue.cancel(review_id)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(wait_task, timeout=1.0)

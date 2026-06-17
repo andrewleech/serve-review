@@ -545,6 +545,8 @@
         // Click handler for comments
         tr.addEventListener('click', function (e) {
             if (e.target.closest('.comment-form') || e.target.closest('.existing-comment')) return;
+            // Don't open the form if the user just finished selecting text.
+            if (window.getSelection && window.getSelection().toString()) return;
             openCommentForm(file.new_path, lineNo, tr);
         });
 
@@ -1049,6 +1051,19 @@
             tab.textContent = branch + ' (' + fileCount + ')';
             tab.dataset.reviewId = review.summary.id;
             tab.addEventListener('click', () => switchTab(review.summary.id));
+
+            if (review.summary.status === 'pending') {
+                const dismiss = document.createElement('button');
+                dismiss.className = 'tab-dismiss';
+                dismiss.textContent = '×';
+                dismiss.title = 'Dismiss this review';
+                dismiss.addEventListener('click', async function (e) {
+                    e.stopPropagation();
+                    await fetch('/api/queue/' + review.summary.id + '/cancel', { method: 'POST' });
+                });
+                tab.appendChild(dismiss);
+            }
+
             bar.appendChild(tab);
         }
     }

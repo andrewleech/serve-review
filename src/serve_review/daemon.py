@@ -211,6 +211,27 @@ class ReviewQueue:
         self._publish({"event": "review_orphaned", "id": review_id})
         self._schedule_reap(review_id)
 
+    def cancel(self, review_id: str) -> bool:
+        """Browser-initiated dismiss of a pending review.
+
+        Marks the item orphaned, wakes the waiting hook SSE stream so it
+        receives a cancellation error and exits, and schedules reap.
+        Returns False if the review is unknown or not pending.
+        """
+        item = self._items.get(review_id)
+        if item is None or item.status != "pending":
+            return False
+
+        item.status = "orphaned"
+
+        event = self._client_events.get(review_id)
+        if event is not None:
+            event.set()
+
+        self._publish({"event": "review_orphaned", "id": review_id})
+        self._schedule_reap(review_id)
+        return True
+
     async def _reap(self, review_id: str) -> None:
         """Remove a finalized item from the queue and notify browsers."""
         self._items.pop(review_id, None)
@@ -340,6 +361,7 @@ class DaemonServer:
                 methods=["POST"],
             ),
             Route("/api/queue/{id}/deny", self._deny, methods=["POST"]),
+            Route("/api/queue/{id}/cancel", self._cancel, methods=["POST"]),
             Route("/api/events", self._browser_events_sse, methods=["GET"]),
             Mount(
                 "/static",
@@ -498,6 +520,12 @@ class DaemonServer:
             return JSONResponse({"error": "already decided"}, status_code=409)
         return JSONResponse({"status": "denied"})
 
+    async def _cancel(self, request: Request) -> Response:
+        review_id = request.path_params["id"]
+        if not self.queue.cancel(review_id):
+            return JSONResponse({"error": "not found or not pending"}, status_code=409)
+        return JSONResponse({"status": "cancelled"})
+
     async def _client_decision_sse(self, request: Request) -> Response:
         review_id = request.path_params["id"]
         item = self.queue.get_review(review_id)
@@ -532,6 +560,10 @@ class DaemonServer:
                 raise
             except KeyError:
                 yield 'event: error\ndata: {"error": "review reaped"}\n\n'
+            except RuntimeError:
+                # Item was cancelled via the /cancel endpoint: decision event
+                # was set but no decision was recorded.
+                yield 'event: error\ndata: {"error": "review cancelled"}\n\n'
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
