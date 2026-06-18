@@ -95,6 +95,16 @@ Prints a YAML snippet for `.pre-commit-config.yaml`. Then:
 pre-commit install --hook-type pre-push
 ```
 
+### Claude Code skill
+
+Installs a skill that teaches Claude how to launch reviews correctly (tool disambiguation, agent launch pattern, scoping):
+
+```bash
+serve-review install-skill
+```
+
+Copies the skill to `~/.claude/skills/serve-review/`, making it available in all Claude Code sessions.
+
 ### Claude Code hook
 
 Intercepts `git push` commands the agent attempts via a `PreToolUse` hook:
