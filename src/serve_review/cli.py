@@ -19,6 +19,7 @@ DEFAULT_PORT = 8567
 
 
 @click.group(invoke_without_command=True, context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(package_name="serve-review")
 @click.option("--port", "-p", default=DEFAULT_PORT, help="Port to serve the review UI on.")
 @click.option(
     "--host",
