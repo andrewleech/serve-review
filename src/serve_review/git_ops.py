@@ -437,4 +437,16 @@ def build_review_from_refs(base: str, head: str) -> ReviewRequest:
         is_force_push=is_force,
     )
 
-    return build_review_request(push_info)
+    # Use base_sha directly rather than going through build_review_request,
+    # which would override the caller's explicit base with merge-base(upstream).
+    commits = get_commits(base_sha, head_sha)
+    files = get_diff(base_sha, head_sha)
+    has_flags = any(
+        flag for f in files for h in f.hunks for line in h.lines for flag in line.flags
+    )
+    return ReviewRequest(
+        push_info=push_info,
+        commits=commits,
+        files=files,
+        has_attention_flags=has_flags,
+    )
