@@ -282,13 +282,17 @@ def _run_standalone(
     If ``port`` is already bound (most likely by something unrelated, since
     callers only invoke standalone when the daemon path failed), pick a free
     ephemeral port instead of failing twice.
+
+    Approvals are written to the decision cache so a subsequent push of the
+    same diff content gets a cache hit and skips the review prompt.
     """
+    from serve_review.models import compute_diff_hash
     from serve_review.server import run_server
 
     actual_port = _resolve_standalone_port(host, port)
     _print_review_banner(host, actual_port, review)
     try:
-        return asyncio.run(
+        decision = asyncio.run(
             run_server(review, port=actual_port, host=host, refresh_fn=refresh_fn)  # type: ignore[arg-type]
         )
     except OSError as exc:
@@ -296,6 +300,21 @@ def _run_standalone(
         if is_hook:
             sys.exit(0)
         sys.exit(1)
+
+    if decision.decision == Decision.APPROVE:
+        from serve_review import cache as _cache
+        from serve_review.daemon import _strip_refs_heads
+
+        diff_hash = compute_diff_hash(review.files)
+        branch = _strip_refs_heads(review.push_info.local_ref)
+        _cache.store_decision(
+            diff_hash,
+            decision,
+            branch=branch,
+            remote=review.push_info.remote_name,
+        )
+
+    return decision
 
 
 def _resolve_standalone_port(host: str, preferred: int) -> int:
