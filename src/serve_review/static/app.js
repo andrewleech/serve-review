@@ -49,6 +49,23 @@
         return file + ':' + line;
     }
 
+    function parseHunkHeader(header) {
+        const m = header.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+        if (!m) return null;
+        return {
+            targetStart: parseInt(m[3]),
+            targetLength: m[4] !== undefined ? parseInt(m[4]) : 1,
+        };
+    }
+
+    function contextUrl(filePath, start, count) {
+        const base = mode === 'daemon'
+            ? '/api/queue/' + activeReviewId + '/context'
+            : '/api/context';
+        return base + '?file=' + encodeURIComponent(filePath) +
+            '&start=' + start + '&count=' + count;
+    }
+
     function totalComments() {
         return comments.size;
     }
@@ -392,6 +409,114 @@
         return section;
     }
 
+    function renderContextLine(content, lineNo, language) {
+        const tr = document.createElement('tr');
+        tr.className = 'diff-line context-line';
+
+        const oldTd = document.createElement('td');
+        oldTd.className = 'line-no';
+        tr.appendChild(oldTd);
+
+        const newTd = document.createElement('td');
+        newTd.className = 'line-no';
+        newTd.textContent = lineNo;
+        tr.appendChild(newTd);
+
+        const prefixTd = document.createElement('td');
+        prefixTd.className = 'line-prefix';
+        prefixTd.textContent = '\u00A0';
+        tr.appendChild(prefixTd);
+
+        const contentTd = document.createElement('td');
+        contentTd.className = 'line-content';
+        contentTd.innerHTML = highlightCode(content, language);
+        tr.appendChild(contentTd);
+
+        return tr;
+    }
+
+    function renderExpandAbove(file, targetStart, minLine) {
+        const tr = document.createElement('tr');
+        tr.className = 'expand-row';
+        const td = document.createElement('td');
+        td.colSpan = 4;
+
+        const btn = document.createElement('button');
+        btn.className = 'expand-btn';
+        btn.title = 'Expand context above';
+        btn.textContent = '\u25B2'; // \u25B2
+
+        let nextEndLine = targetStart - 1;
+
+        btn.addEventListener('click', async function () {
+            if (nextEndLine < minLine) { tr.remove(); return; }
+            btn.disabled = true;
+            const startLine = Math.max(minLine, nextEndLine - 9);
+            const count = nextEndLine - startLine + 1;
+            try {
+                const resp = await fetch(contextUrl(file.new_path, startLine, count));
+                if (!resp.ok) { tr.remove(); return; }
+                const data = await resp.json();
+                if (!data.lines || data.lines.length === 0) { tr.remove(); return; }
+                for (let i = 0; i < data.lines.length; i++) {
+                    tr.parentNode.insertBefore(renderContextLine(data.lines[i], startLine + i, file.language), tr);
+                }
+                nextEndLine = startLine - 1;
+                if (nextEndLine < minLine) { tr.remove(); return; }
+            } catch (e) {
+                tr.remove(); return;
+            }
+            btn.disabled = false;
+        });
+
+        td.appendChild(btn);
+        tr.appendChild(td);
+        return tr;
+    }
+
+    function renderExpandBelow(file, lastNewLine, maxLine) {
+        const tr = document.createElement('tr');
+        tr.className = 'expand-row';
+        const td = document.createElement('td');
+        td.colSpan = 4;
+
+        const btn = document.createElement('button');
+        btn.className = 'expand-btn';
+        btn.title = 'Expand context below';
+        btn.textContent = '\u25BC'; // \u25BC
+
+        let nextStartLine = lastNewLine + 1;
+
+        btn.addEventListener('click', async function () {
+            const endLine = maxLine !== null
+                ? Math.min(maxLine, nextStartLine + 9)
+                : nextStartLine + 9;
+            const count = endLine - nextStartLine + 1;
+            if (count <= 0) { tr.remove(); return; }
+            btn.disabled = true;
+            try {
+                const resp = await fetch(contextUrl(file.new_path, nextStartLine, count));
+                if (!resp.ok) { tr.remove(); return; }
+                const data = await resp.json();
+                if (!data.lines || data.lines.length === 0) { tr.remove(); return; }
+                for (let i = 0; i < data.lines.length; i++) {
+                    tr.parentNode.insertBefore(renderContextLine(data.lines[i], nextStartLine + i, file.language), tr);
+                }
+                nextStartLine += data.lines.length;
+                if ((maxLine !== null && nextStartLine > maxLine) || data.lines.length < count) {
+                    tr.remove(); return;
+                }
+            } catch (e) {
+                tr.remove(); return;
+            }
+            btn.disabled = false;
+        });
+
+        td.appendChild(btn);
+        tr.appendChild(td);
+        return tr;
+    }
+
     function renderFile(file) {
         const div = document.createElement('div');
         div.className = 'file-diff open';
@@ -455,7 +580,25 @@
         const table = document.createElement('table');
         table.className = 'diff-table';
 
-        for (const hunk of file.hunks) {
+        // Context expansion is available for non-deleted files (deleted files
+        // don't exist at local_sha, so git show would fail anyway).
+        const canExpand = !file.is_deleted;
+
+        for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
+            const hunk = file.hunks[hunkIdx];
+            const parsed = canExpand ? parseHunkHeader(hunk.header) : null;
+
+            // Expand-above: show if there are lines before this hunk not covered by prev hunk
+            if (parsed) {
+                const prevParsed = hunkIdx > 0 ? parseHunkHeader(file.hunks[hunkIdx - 1].header) : null;
+                const prevLastNewLine = prevParsed
+                    ? prevParsed.targetStart + prevParsed.targetLength - 1
+                    : 0;
+                if (parsed.targetStart > prevLastNewLine + 1) {
+                    table.appendChild(renderExpandAbove(file, parsed.targetStart, prevLastNewLine + 1));
+                }
+            }
+
             // Hunk header row
             const hunkRow = document.createElement('tr');
             hunkRow.className = 'hunk-header';
@@ -473,6 +616,17 @@
                 const key = commentKey(file.new_path, line.new_line_no || line.old_line_no);
                 if (comments.has(key)) {
                     table.appendChild(renderExistingComment(key));
+                }
+            }
+
+            // Expand-below: show after last line of hunk, bounded by next hunk's start
+            if (parsed) {
+                const lastNewLine = parsed.targetStart + parsed.targetLength - 1;
+                const nextHunk = file.hunks[hunkIdx + 1];
+                const nextParsed = nextHunk ? parseHunkHeader(nextHunk.header) : null;
+                const maxLine = nextParsed ? nextParsed.targetStart - 1 : null;
+                if (maxLine === null || maxLine >= lastNewLine + 1) {
+                    table.appendChild(renderExpandBelow(file, lastNewLine, maxLine));
                 }
             }
         }

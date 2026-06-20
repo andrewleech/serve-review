@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
+from dataclasses import replace
 from typing import TextIO
 
 from unidiff import PatchSet
@@ -324,6 +325,32 @@ def _fallback_diff(raw_diff: str, diff_range: list[str]) -> list[FileDiff]:
     return files
 
 
+def get_file_context(
+    repo_path: str, sha: str, file_path: str, start: int, count: int
+) -> list[str]:
+    """Fetch a range of lines from a file at a given commit.
+
+    Returns a list of raw line strings (without trailing newlines).
+    Returns an empty list if the file or commit cannot be found.
+    """
+    if not repo_path or not sha or not file_path:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{sha}:{file_path}"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=repo_path,
+        )
+        all_lines = result.stdout.split("\n")
+        start_idx = max(0, start - 1)
+        end_idx = min(len(all_lines), start_idx + count)
+        return all_lines[start_idx:end_idx]
+    except subprocess.CalledProcessError:
+        return []
+
+
 def find_upstream_default() -> str | None:
     """Best guess at the upstream's default branch ref name (e.g. ``upstream/main``).
 
@@ -367,6 +394,10 @@ def build_review_request(push_info: PushInfo) -> ReviewRequest:
     Falls back to ``remote_sha`` when no upstream default ref can be
     discovered (unusual repo layouts) or when the merge-base lookup fails.
     """
+    with contextlib.suppress(subprocess.CalledProcessError):
+        repo_path = run_git("rev-parse", "--show-toplevel")
+        push_info = replace(push_info, repo_path=repo_path)
+
     base_sha = push_info.remote_sha
     upstream = find_upstream_default()
     if upstream is not None:
@@ -418,6 +449,11 @@ def build_review_from_refs(base: str, head: str) -> ReviewRequest:
     except subprocess.CalledProcessError:
         remote_url = ""
 
+    try:
+        repo_path = run_git("rev-parse", "--show-toplevel")
+    except subprocess.CalledProcessError:
+        repo_path = ""
+
     is_force = False
     zero_sha = "0" * 40
     if base_sha != zero_sha:
@@ -435,6 +471,7 @@ def build_review_from_refs(base: str, head: str) -> ReviewRequest:
         remote_name=remote,
         remote_url=remote_url,
         is_force_push=is_force,
+        repo_path=repo_path,
     )
 
     # Use base_sha directly rather than going through build_review_request,

@@ -1100,6 +1100,44 @@ mark.attention-flag {
     100% { opacity: 0; }
 }
 
+/* --- Context expansion --- */
+
+.expand-row td {
+    padding: 1px 0;
+    text-align: center;
+    background: var(--bg-root);
+    border-top: 1px dashed var(--border);
+}
+
+.expand-btn {
+    display: inline-block;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    padding: 1px 12px;
+    border-radius: 2px;
+    font-family: var(--font-mono);
+    line-height: 1.8;
+    min-height: 20px;
+    letter-spacing: 0.05em;
+}
+
+.expand-btn:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+}
+
+.expand-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.context-line {
+    opacity: 0.7;
+}
+
 /* Empty state */
 #empty-state {
     display: flex;

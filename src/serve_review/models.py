@@ -97,6 +97,7 @@ class PushInfo:
     remote_name: str
     remote_url: str
     is_force_push: bool
+    repo_path: str = ""
 
 
 @dataclass

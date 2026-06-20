@@ -31,6 +31,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from serve_review import cache
+from serve_review.git_ops import get_file_context
 from serve_review.models import (
     CachedDecision,
     Decision,
@@ -362,6 +363,7 @@ class DaemonServer:
             ),
             Route("/api/queue/{id}/deny", self._deny, methods=["POST"]),
             Route("/api/queue/{id}/cancel", self._cancel, methods=["POST"]),
+            Route("/api/queue/{id}/context", self._get_context, methods=["GET"]),
             Route("/api/events", self._browser_events_sse, methods=["GET"]),
             Mount(
                 "/static",
@@ -525,6 +527,28 @@ class DaemonServer:
         if not self.queue.cancel(review_id):
             return JSONResponse({"error": "not found or not pending"}, status_code=409)
         return JSONResponse({"status": "cancelled"})
+
+    async def _get_context(self, request: Request) -> Response:
+        review_id = request.path_params["id"]
+        item = self.queue.get_review(review_id)
+        if item is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        file_path = request.query_params.get("file", "")
+        try:
+            start = int(request.query_params.get("start", "1"))
+            count = int(request.query_params.get("count", "10"))
+        except ValueError:
+            return JSONResponse({"error": "invalid params"}, status_code=400)
+        count = min(max(1, count), 50)
+        start = max(1, start)
+        lines = get_file_context(
+            item.review.push_info.repo_path,
+            item.review.push_info.local_sha,
+            file_path,
+            start,
+            count,
+        )
+        return JSONResponse({"lines": lines, "start": start})
 
     async def _client_decision_sse(self, request: Request) -> Response:
         review_id = request.path_params["id"]

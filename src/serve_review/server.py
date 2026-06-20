@@ -17,6 +17,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from serve_review.git_ops import get_file_context
 from serve_review.models import (
     Decision,
     ReviewComment,
@@ -45,6 +46,7 @@ class ReviewServer:
             Route("/api/review", self._get_review),
             Route("/api/review/approve", self._approve, methods=["POST"]),
             Route("/api/review/deny", self._deny, methods=["POST"]),
+            Route("/api/context", self._get_context, methods=["GET"]),
             Mount(
                 "/static",
                 app=StaticFiles(
@@ -105,6 +107,24 @@ class ReviewServer:
         )
         self._decided.set()
         return JSONResponse({"status": "denied"})
+
+    async def _get_context(self, request: Request) -> Response:
+        file_path = request.query_params.get("file", "")
+        try:
+            start = int(request.query_params.get("start", "1"))
+            count = int(request.query_params.get("count", "10"))
+        except ValueError:
+            return JSONResponse({"error": "invalid params"}, status_code=400)
+        count = min(max(1, count), 50)
+        start = max(1, start)
+        lines = get_file_context(
+            self.review.push_info.repo_path,
+            self.review.push_info.local_sha,
+            file_path,
+            start,
+            count,
+        )
+        return JSONResponse({"lines": lines, "start": start})
 
     async def wait_for_decision(self) -> ReviewDecision:
         """Block until the reviewer makes a decision."""
