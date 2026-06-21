@@ -6,6 +6,7 @@ import enum
 import hashlib
 import re
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
 from enum import Enum
 from typing import Any
 
@@ -112,8 +113,12 @@ class ReviewRequest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReviewRequest:
+        # Filter to known fields so a newer client submitting extra fields
+        # does not crash an older running daemon with an unexpected-kwarg error.
+        push_known = {f.name for f in dataclass_fields(PushInfo)}
+        push_data = {k: v for k, v in data["push_info"].items() if k in push_known}
         return cls(
-            push_info=PushInfo(**data["push_info"]),
+            push_info=PushInfo(**push_data),
             commits=[CommitInfo(**c) for c in data.get("commits", [])],
             files=[_file_diff_from_dict(f) for f in data.get("files", [])],
             has_attention_flags=data.get("has_attention_flags", False),
