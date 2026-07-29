@@ -30,8 +30,10 @@ from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from dataclasses import asdict
+
 from serve_review import cache
-from serve_review.git_ops import get_file_context
+from serve_review.git_ops import get_commit_diff, get_file_context
 from serve_review.models import (
     CachedDecision,
     Decision,
@@ -39,6 +41,7 @@ from serve_review.models import (
     ReviewQueueItem,
     ReviewRequest,
     compute_diff_hash,
+    serialize_for_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,6 +367,7 @@ class DaemonServer:
             Route("/api/queue/{id}/deny", self._deny, methods=["POST"]),
             Route("/api/queue/{id}/cancel", self._cancel, methods=["POST"]),
             Route("/api/queue/{id}/context", self._get_context, methods=["GET"]),
+            Route("/api/queue/{id}/commit", self._get_commit_diff, methods=["GET"]),
             Route("/api/events", self._browser_events_sse, methods=["GET"]),
             Mount(
                 "/static",
@@ -534,6 +538,7 @@ class DaemonServer:
         if item is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         file_path = request.query_params.get("file", "")
+        sha = request.query_params.get("sha", item.review.push_info.local_sha)
         try:
             start = int(request.query_params.get("start", "1"))
             count = int(request.query_params.get("count", "10"))
@@ -543,12 +548,28 @@ class DaemonServer:
         start = max(1, start)
         lines = get_file_context(
             item.review.push_info.repo_path,
-            item.review.push_info.local_sha,
+            sha,
             file_path,
             start,
             count,
         )
         return JSONResponse({"lines": lines, "start": start})
+
+    async def _get_commit_diff(self, request: Request) -> Response:
+        review_id = request.path_params["id"]
+        item = self.queue.get_review(review_id)
+        if item is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        sha = request.query_params.get("sha", "")
+        if not sha:
+            return JSONResponse({"error": "missing sha"}, status_code=400)
+        valid_shas = {c.sha for c in item.review.commits}
+        if sha not in valid_shas:
+            return JSONResponse({"error": "unknown commit"}, status_code=404)
+        files = get_commit_diff(sha)
+        return JSONResponse(
+            serialize_for_json([asdict(f) for f in files])
+        )
 
     async def _client_decision_sse(self, request: Request) -> Response:
         review_id = request.path_params["id"]

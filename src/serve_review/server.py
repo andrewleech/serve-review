@@ -17,12 +17,15 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from serve_review.git_ops import get_file_context
+from serve_review.git_ops import get_commit_diff, get_file_context
+from dataclasses import asdict
+
 from serve_review.models import (
     Decision,
     ReviewComment,
     ReviewDecision,
     ReviewRequest,
+    serialize_for_json,
 )
 
 
@@ -47,6 +50,7 @@ class ReviewServer:
             Route("/api/review/approve", self._approve, methods=["POST"]),
             Route("/api/review/deny", self._deny, methods=["POST"]),
             Route("/api/context", self._get_context, methods=["GET"]),
+            Route("/api/commit", self._get_commit_diff, methods=["GET"]),
             Mount(
                 "/static",
                 app=StaticFiles(
@@ -110,6 +114,7 @@ class ReviewServer:
 
     async def _get_context(self, request: Request) -> Response:
         file_path = request.query_params.get("file", "")
+        sha = request.query_params.get("sha", self.review.push_info.local_sha)
         try:
             start = int(request.query_params.get("start", "1"))
             count = int(request.query_params.get("count", "10"))
@@ -119,12 +124,22 @@ class ReviewServer:
         start = max(1, start)
         lines = get_file_context(
             self.review.push_info.repo_path,
-            self.review.push_info.local_sha,
+            sha,
             file_path,
             start,
             count,
         )
         return JSONResponse({"lines": lines, "start": start})
+
+    async def _get_commit_diff(self, request: Request) -> Response:
+        sha = request.query_params.get("sha", "")
+        if not sha:
+            return JSONResponse({"error": "missing sha"}, status_code=400)
+        valid_shas = {c.sha for c in self.review.commits}
+        if sha not in valid_shas:
+            return JSONResponse({"error": "unknown commit"}, status_code=404)
+        files = get_commit_diff(sha)
+        return JSONResponse(serialize_for_json([asdict(f) for f in files]))
 
     async def wait_for_decision(self) -> ReviewDecision:
         """Block until the reviewer makes a decision."""

@@ -325,6 +325,84 @@ def _fallback_diff(raw_diff: str, diff_range: list[str]) -> list[FileDiff]:
     return files
 
 
+def get_commit_diff(sha: str) -> list[FileDiff]:
+    """Get parsed file diffs for a single commit."""
+    try:
+        raw_diff = subprocess.run(
+            ["git", "show", "--no-color", "-U3", "--format=", sha],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except subprocess.CalledProcessError:
+        return []
+
+    if not raw_diff:
+        return []
+
+    try:
+        patch = PatchSet(raw_diff)
+    except Exception as exc:
+        import sys
+
+        print(f"serve-review: warning: failed to parse commit diff: {exc}", file=sys.stderr)
+        return []
+
+    files: list[FileDiff] = []
+    for patched_file in patch:
+        hunks: list[DiffHunk] = []
+        for hunk in patched_file:
+            diff_lines: list[DiffLine] = []
+            for line in hunk:
+                line_type = " "
+                if line.is_added:
+                    line_type = "+"
+                elif line.is_removed:
+                    line_type = "-"
+
+                content = line.value.rstrip("\n")
+                flags = scan_attention(content) if line.is_added else []
+
+                diff_lines.append(
+                    DiffLine(
+                        line_type=line_type,
+                        content=content,
+                        old_line_no=line.source_line_no,
+                        new_line_no=line.target_line_no,
+                        flags=flags,
+                    )
+                )
+
+            hunk_header = (
+                f"@@ -{hunk.source_start},{hunk.source_length}"
+                f" +{hunk.target_start},{hunk.target_length} @@"
+            )
+            if hunk.section_header:
+                hunk_header += f" {hunk.section_header}"
+            hunks.append(DiffHunk(header=hunk_header, lines=diff_lines))
+
+        source = _strip_diff_prefix(patched_file.source_file or "")
+        target = _strip_diff_prefix(patched_file.target_file or "")
+        display_path = target if target and target != "/dev/null" else source
+        files.append(
+            FileDiff(
+                old_path=source if source != "/dev/null" else display_path,
+                new_path=display_path,
+                is_new=patched_file.is_added_file,
+                is_deleted=patched_file.is_removed_file,
+                is_rename=bool(
+                    patched_file.source_file
+                    and patched_file.target_file
+                    and patched_file.source_file != patched_file.target_file
+                ),
+                hunks=hunks,
+                language=guess_language(display_path),
+            )
+        )
+
+    return files
+
+
 def get_file_context(
     repo_path: str, sha: str, file_path: str, start: int, count: int
 ) -> list[str]:

@@ -13,6 +13,7 @@
     let comments = new Map();            // active review's comments (read by render fns)
     let activeCommentForm = null;        // {file, line, row} of currently open form
     let selectedCommitSha = null;        // when set, diff is filtered to this commit's files
+    let commitDiffFiles = null;          // per-commit diff files (fetched on demand)
 
     // --- Helpers ---
 
@@ -66,6 +67,25 @@
             '&start=' + start + '&count=' + count;
     }
 
+    function fileContextUrl(filePath, start, count) {
+        if (commitDiffFiles !== null && selectedCommitSha) {
+            const base = mode === 'daemon'
+                ? '/api/queue/' + activeReviewId + '/context'
+                : '/api/context';
+            return base + '?file=' + encodeURIComponent(filePath) +
+                '&start=' + start + '&count=' + count +
+                '&sha=' + encodeURIComponent(selectedCommitSha);
+        }
+        return contextUrl(filePath, start, count);
+    }
+
+    function commitDiffUrl(sha) {
+        const base = mode === 'daemon'
+            ? '/api/queue/' + activeReviewId + '/commit'
+            : '/api/commit';
+        return base + '?sha=' + encodeURIComponent(sha);
+    }
+
     function totalComments() {
         return comments.size;
     }
@@ -95,8 +115,9 @@
         const mobileNav = renderMobileFileNav();
         main.appendChild(mobileNav);
 
-        // File diffs
-        for (const file of reviewData.files) {
+        // File diffs (use per-commit diff when viewing a single commit)
+        const filesToShow = commitDiffFiles !== null ? commitDiffFiles : reviewData.files;
+        for (const file of filesToShow) {
             main.appendChild(renderFile(file));
         }
 
@@ -204,9 +225,10 @@
         const filesSection = document.createElement('div');
         filesSection.className = 'section open';
 
+        const filesForNav = commitDiffFiles !== null ? commitDiffFiles : reviewData.files;
         const filesToggle = document.createElement('button');
         filesToggle.className = 'section-toggle';
-        filesToggle.textContent = 'Files (' + reviewData.files.length + ')';
+        filesToggle.textContent = 'Files (' + filesForNav.length + ')';
         filesToggle.addEventListener('click', () => toggleSection(filesSection));
         filesSection.appendChild(filesToggle);
 
@@ -218,7 +240,7 @@
         const list = document.createElement('ul');
         list.className = 'file-nav-list';
 
-        for (const file of reviewData.files) {
+        for (const file of filesForNav) {
             const item = document.createElement('li');
             item.className = 'file-nav-item';
             item.addEventListener('click', () => scrollToFile(file.new_path));
@@ -262,7 +284,8 @@
 
         const toggle = document.createElement('button');
         toggle.className = 'section-toggle';
-        toggle.textContent = 'Files (' + reviewData.files.length + ')';
+        const filesForMobile = commitDiffFiles !== null ? commitDiffFiles : reviewData.files;
+        toggle.textContent = 'Files (' + filesForMobile.length + ')';
         toggle.addEventListener('click', () => toggleSection(section));
         section.appendChild(toggle);
 
@@ -274,7 +297,7 @@
         const list = document.createElement('ul');
         list.className = 'file-nav-list';
 
-        for (const file of reviewData.files) {
+        for (const file of filesForMobile) {
             const item = document.createElement('li');
             item.className = 'file-nav-item';
             item.addEventListener('click', () => {
@@ -357,34 +380,19 @@
             msg.className = 'commit-message';
             msg.textContent = commit.message;
 
-            const meta = document.createElement('span');
-            meta.className = 'commit-meta';
-            meta.textContent = commit.author;
-
             header.appendChild(sha);
             header.appendChild(msg);
-            header.appendChild(meta);
             item.appendChild(header);
 
-            // Expandable body (full message + file count)
-            if (commit.body || commit.files.length > 0) {
+            // Expandable body (full message)
+            if (commit.body) {
                 const detail = document.createElement('div');
                 detail.className = 'commit-detail';
 
-                if (commit.body) {
-                    const bodyEl = document.createElement('pre');
-                    bodyEl.className = 'commit-body';
-                    bodyEl.textContent = commit.body;
-                    detail.appendChild(bodyEl);
-                }
-
-                if (commit.files.length > 0) {
-                    const fileCount = document.createElement('span');
-                    fileCount.className = 'commit-file-count';
-                    fileCount.textContent = commit.files.length + ' file' +
-                        (commit.files.length !== 1 ? 's' : '') + ' changed';
-                    detail.appendChild(fileCount);
-                }
+                const bodyEl = document.createElement('pre');
+                bodyEl.className = 'commit-body';
+                bodyEl.textContent = commit.body;
+                detail.appendChild(bodyEl);
 
                 item.appendChild(detail);
             }
@@ -454,7 +462,7 @@
             const startLine = Math.max(minLine, nextEndLine - 9);
             const count = nextEndLine - startLine + 1;
             try {
-                const resp = await fetch(contextUrl(file.new_path, startLine, count));
+                const resp = await fetch(fileContextUrl(file.new_path, startLine, count));
                 if (!resp.ok) { tr.remove(); return; }
                 const data = await resp.json();
                 if (!data.lines || data.lines.length === 0) { tr.remove(); return; }
@@ -495,7 +503,7 @@
             if (count <= 0) { tr.remove(); return; }
             btn.disabled = true;
             try {
-                const resp = await fetch(contextUrl(file.new_path, nextStartLine, count));
+                const resp = await fetch(fileContextUrl(file.new_path, nextStartLine, count));
                 if (!resp.ok) { tr.remove(); return; }
                 const data = await resp.json();
                 if (!data.lines || data.lines.length === 0) { tr.remove(); return; }
@@ -974,7 +982,7 @@
         section.classList.toggle('open');
     }
 
-    function selectCommit(sha) {
+    async function selectCommit(sha) {
         // Toggle: clicking the same commit deselects
         if (selectedCommitSha === sha) sha = null;
         selectedCommitSha = sha;
@@ -994,35 +1002,6 @@
             showAllBtn.classList.toggle('hidden', !sha);
         }
 
-        // Get file list for the selected commit
-        var commitFiles = null;
-        if (sha) {
-            var commit = reviewData.commits.find(function (c) { return c.sha === sha; });
-            if (commit) commitFiles = new Set(commit.files);
-        }
-
-        // git_ops produces both diff paths (via _strip_diff_prefix) and
-        // commit file lists (via git log --name-only) without a/b prefixes,
-        // so a single membership check is sufficient.
-        document.querySelectorAll('.file-diff').forEach(function (el) {
-            if (!commitFiles) {
-                el.classList.remove('filtered-out');
-            } else {
-                el.classList.toggle('filtered-out', !commitFiles.has(el.dataset.file));
-            }
-        });
-
-        document.querySelectorAll('.file-nav-item').forEach(function (item) {
-            if (!commitFiles) {
-                item.classList.remove('filtered-out');
-            } else {
-                var nameEl = item.querySelector('.file-nav-name span');
-                if (nameEl) {
-                    item.classList.toggle('filtered-out', !commitFiles.has(nameEl.textContent));
-                }
-            }
-        });
-
         // Update header stats to show filter
         var headerStats = document.querySelector('.header-stats');
         if (headerStats) {
@@ -1036,6 +1015,24 @@
                 headerStats.appendChild(indicator);
             }
         }
+
+        // Fetch per-commit diff from server
+        if (sha) {
+            try {
+                var resp = await fetch(commitDiffUrl(sha));
+                if (resp.ok) {
+                    commitDiffFiles = await resp.json();
+                } else {
+                    commitDiffFiles = null;
+                }
+            } catch (e) {
+                commitDiffFiles = null;
+            }
+        } else {
+            commitDiffFiles = null;
+        }
+
+        render();
     }
 
     // --- Actions ---
