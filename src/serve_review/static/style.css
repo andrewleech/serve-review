@@ -396,6 +396,46 @@ body {
     list-style: none;
 }
 
+
+.saved-comments-list {
+    list-style: none;
+}
+
+.saved-comment-item {
+    border-top: 1px solid var(--border);
+}
+
+.saved-comment-link {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 8px 16px;
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.saved-comment-link:active {
+    background: var(--bg-hover);
+}
+
+.saved-comment-location {
+    color: var(--amber);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    overflow-wrap: anywhere;
+}
+
+.saved-comment-excerpt {
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .file-nav-item {
     display: flex;
     align-items: center;
@@ -760,6 +800,18 @@ mark.attention-flag {
     white-space: pre-wrap;
 }
 
+.comment-row td {
+    border-left: 3px solid var(--amber);
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.existing-comment {
+    background: var(--bg-hover);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+}
+
 .comment-actions {
     display: flex;
     gap: 4px;
@@ -857,6 +909,12 @@ mark.attention-flag {
     flex: 1;
 }
 
+.decision-actions {
+    display: flex;
+    gap: 10px;
+    margin: 0 auto;
+}
+
 #action-bar button {
     padding: 10px 20px;
     border: none;
@@ -882,6 +940,11 @@ mark.attention-flag {
 .btn-deny {
     background: var(--red);
     color: #fff;
+}
+
+#action-bar button:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 /* --- Desktop layout --- */
@@ -946,9 +1009,6 @@ mark.attention-flag {
         min-width: 0;
     }
 
-    .file-header {
-        top: 0; /* no main header offset in grid layout */
-    }
 
     .line-content {
         white-space: pre;

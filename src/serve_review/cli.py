@@ -211,8 +211,8 @@ def _run_review(
         push_info = pushes[0]
         review = build_review_request(push_info)
         refresh_fn = lambda: build_review_request(push_info)  # noqa: E731
-    elif base is not None:
-        resolved_base = base
+    elif base is not None or head is not None:
+        resolved_base = base or _find_default_branch()
         resolved_head = head or "HEAD"
         review = build_review_from_refs(resolved_base, resolved_head)
         refresh_fn = lambda: build_review_from_refs(resolved_base, resolved_head)  # noqa: E731

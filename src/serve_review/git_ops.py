@@ -511,17 +511,19 @@ def build_review_from_refs(base: str, head: str) -> ReviewRequest:
     except subprocess.CalledProcessError:
         base_sha = raw_base
 
-    # Determine current branch and remote info
+    # Metadata must describe the requested local branch, not the checked-out branch.
     try:
-        branch = run_git("symbolic-ref", "--short", "HEAD")
+        full_ref = run_git("rev-parse", "--symbolic-full-name", "--verify", head)
     except subprocess.CalledProcessError:
+        full_ref = ""
+    if full_ref.startswith("refs/heads/"):
+        branch = full_ref.removeprefix("refs/heads/")
+    else:
         branch = head_sha
-
     try:
         remote = run_git("config", f"branch.{branch}.remote")
     except subprocess.CalledProcessError:
         remote = "origin"
-
     try:
         remote_url = run_git("remote", "get-url", remote)
     except subprocess.CalledProcessError:

@@ -16,6 +16,42 @@
     let commitDiffFiles = null;          // per-commit diff files (fetched on demand)
 
     // --- Helpers ---
+    function draftStorageKey(data) {
+        return 'serve-review-draft:' + data.push_info.local_sha + ':' +
+            data.files.map(file => file.new_path).join('|');
+    }
+
+    function loadDraft(data) {
+        try {
+            const draft = JSON.parse(localStorage.getItem(draftStorageKey(data)) || '{}');
+            return { comments: new Map((draft.comments || []).map(c =>
+                [commentKey(c.file, c.line), c])), overall: draft.overall || '' };
+        } catch (e) {
+            return { comments: new Map(), overall: '' };
+        }
+    }
+
+    function saveDraft() {
+        if (!reviewData) return;
+        const overall = document.getElementById('overall-comment');
+        const storedOverall = overall ? overall.value :
+            (overallByReview.has(activeReviewId)
+                ? overallByReview.get(activeReviewId)
+                : loadDraft(reviewData).overall);
+        if (overall && activeReviewId !== null) {
+            overallByReview.set(activeReviewId, overall.value);
+        }
+        try {
+            localStorage.setItem(draftStorageKey(reviewData), JSON.stringify({
+                comments: Array.from(comments.values()),
+                overall: storedOverall,
+            }));
+        } catch (e) {}
+    }
+
+    function commentList() {
+        return Array.from(comments.values(), c => ({ body: c.body, file: c.file, line: c.line }));
+    }
 
     function esc(str) {
         const d = document.createElement('div');
@@ -126,6 +162,7 @@
 
         layout.appendChild(main);
         app.appendChild(layout);
+        updateSavedComments();
         app.appendChild(renderActionBar());
 
         if (mode === 'daemon') {
@@ -274,7 +311,70 @@
         filesSection.appendChild(wrap);
         sidebar.appendChild(filesSection);
 
+        sidebar.appendChild(renderCommentSection('saved-comments-section'));
+
         return sidebar;
+    }
+
+    function renderCommentSection(sectionId) {
+        const section = document.createElement('div');
+        section.className = sectionId === 'mobile-saved-comments' ? 'section' : 'section open';
+        const toggle = document.createElement('button');
+        toggle.className = 'section-toggle';
+        toggle.addEventListener('click', () => toggleSection(section));
+        section.appendChild(toggle);
+        const wrap = document.createElement('div');
+        wrap.className = 'section-body-wrap';
+        const list = document.createElement('ul');
+        list.className = 'saved-comments-list';
+        wrap.appendChild(list);
+        section.appendChild(wrap);
+        updateSavedComments();
+        return section;
+    }
+
+    function updateSavedComments() {
+        document.querySelectorAll('.saved-comments-list').forEach(function (list) {
+            const toggle = list.closest('.section').querySelector('.section-toggle');
+            list.innerHTML = '';
+            toggle.textContent = 'Comments (' + comments.size + ')';
+            for (const comment of comments.values()) {
+                const item = document.createElement('li');
+                item.className = 'saved-comment-item';
+                const link = document.createElement('button');
+                link.className = 'saved-comment-link';
+                const location = document.createElement('span');
+                location.className = 'saved-comment-location';
+                location.textContent = comment.file + ':' + comment.line;
+                const excerpt = document.createElement('span');
+                excerpt.className = 'saved-comment-excerpt';
+                excerpt.textContent = comment.body.replace(/\s+/g, ' ').trim();
+                link.appendChild(location);
+                link.appendChild(excerpt);
+                link.addEventListener('click', () => jumpToComment(comment));
+                item.appendChild(link);
+                list.appendChild(item);
+            }
+        });
+    }
+
+
+    function jumpToComment(comment) {
+        const jump = () => {
+            const file = document.querySelector('.file-diff[data-file="' + CSS.escape(comment.file) + '"]');
+            if (file) file.classList.add('open');
+            const row = document.querySelector('.diff-line[data-file="' + CSS.escape(comment.file) +
+                '"][data-line="' + comment.line + '"]');
+            if (row) {
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                row.style.outline = '2px solid var(--amber)';
+                setTimeout(() => { row.style.outline = ''; }, 2000);
+            } else if (file) {
+                file.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        };
+        if (commitDiffFiles !== null) selectCommit(null).then(jump);
+        else jump();
     }
 
     function renderMobileFileNav() {
@@ -339,6 +439,7 @@
         container.id = 'mobile-nav-container';
         container.appendChild(commitsSection);
         container.appendChild(section);
+        container.appendChild(renderCommentSection('mobile-saved-comments'));
         return container;
     }
 
@@ -772,6 +873,8 @@
             e.stopPropagation();
             const prevRow = tr.previousElementSibling;
             comments.delete(key);
+            updateSavedComments();
+            saveDraft();
             tr.remove();
             if (prevRow) {
                 openCommentForm(comment.file, comment.line, prevRow, comment.body);
@@ -784,7 +887,6 @@
             e.stopPropagation();
             comments.delete(key);
             tr.remove();
-            // Remove badge from line
             const lineRow = document.querySelector(
                 '.diff-line[data-file="' + CSS.escape(comment.file) + '"][data-line="' + comment.line + '"]'
             );
@@ -792,6 +894,8 @@
                 const badge = lineRow.querySelector('.line-comment-badge');
                 if (badge) badge.remove();
             }
+            saveDraft();
+            updateSavedComments();
             updateCommentCount();
         });
 
@@ -814,10 +918,12 @@
         label.htmlFor = 'overall-comment';
         label.textContent = 'Overall comment';
         section.appendChild(label);
-
         const textarea = document.createElement('textarea');
+
+
         textarea.id = 'overall-comment';
         textarea.placeholder = 'Optional overall comment...';
+        textarea.addEventListener('input', saveDraft);
         section.appendChild(textarea);
 
         return section;
@@ -837,17 +943,19 @@
         spacer.className = 'action-spacer';
         bar.appendChild(spacer);
 
+        const actions = document.createElement('div');
+        actions.className = 'decision-actions';
         const approveBtn = document.createElement('button');
         approveBtn.className = 'btn-approve';
         approveBtn.textContent = 'Approve';
         approveBtn.addEventListener('click', handleApprove);
-        bar.appendChild(approveBtn);
-
+        actions.appendChild(approveBtn);
         const denyBtn = document.createElement('button');
         denyBtn.className = 'btn-deny';
         denyBtn.textContent = 'Request Changes';
         denyBtn.addEventListener('click', handleDeny);
-        bar.appendChild(denyBtn);
+        actions.appendChild(denyBtn);
+        bar.appendChild(actions);
 
         return bar;
     }
@@ -879,41 +987,68 @@
         const cancelBtn = document.createElement('button');
         cancelBtn.className = 'btn-cancel';
         cancelBtn.textContent = 'Cancel';
+        let cancelAutosave = false;
+        cancelBtn.addEventListener('pointerdown', function () {
+            cancelAutosave = true;
+        });
+        cancelBtn.addEventListener('mousedown', function () {
+            cancelAutosave = true;
+        });
         cancelBtn.addEventListener('click', function (e) {
             e.stopPropagation();
+            cancelAutosave = true;
             closeCommentForm();
         });
 
         const saveBtn = document.createElement('button');
         saveBtn.className = 'btn-save';
         saveBtn.textContent = 'Save';
+        textarea.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                e.preventDefault();
+                saveBtn.click();
+            }
+        });
+        textarea.addEventListener('blur', function () {
+            setTimeout(function () {
+                if (!cancelAutosave && activeCommentForm && activeCommentForm.row === tr &&
+                    !tr.contains(document.activeElement)) saveBtn.click();
+            }, 0);
+        });
         saveBtn.addEventListener('click', function (e) {
             e.stopPropagation();
             const body = textarea.value.trim();
-            if (!body) return;
-
             const key = commentKey(filePath, lineNo);
+            if (!body) {
+                comments.delete(key);
+                if (afterRow) {
+                    const badge = afterRow.querySelector('.line-comment-badge');
+                    if (badge) badge.remove();
+                }
+                closeCommentForm();
+                saveDraft();
+                updateSavedComments();
+                updateCommentCount();
+                return;
+            }
             comments.set(key, { body: body, file: filePath, line: lineNo });
-
             closeCommentForm();
-
-            // Add badge to the line if not present
-            const lineRow = afterRow;
-            if (lineRow && !lineRow.querySelector('.line-comment-badge')) {
-                const newNoTd = lineRow.querySelectorAll('.line-no')[1];
+            if (afterRow && !afterRow.querySelector('.line-comment-badge')) {
+                const newNoTd = afterRow.querySelectorAll('.line-no')[1];
                 if (newNoTd) {
                     const badge = document.createElement('span');
                     badge.className = 'line-comment-badge';
                     newNoTd.appendChild(badge);
                 }
             }
-
-            // Insert comment display row
-            const commentRow = renderExistingComment(key);
-            afterRow.parentNode.insertBefore(commentRow, afterRow.nextSibling);
-
+            const next = afterRow.nextElementSibling;
+            if (next && next.dataset.commentKey === key) next.remove();
+            afterRow.parentNode.insertBefore(renderExistingComment(key), afterRow.nextSibling);
             updateCommentCount();
+            saveDraft();
+            updateSavedComments();
         });
+
 
         actions.appendChild(cancelBtn);
         actions.appendChild(saveBtn);
@@ -983,6 +1118,10 @@
     }
 
     async function selectCommit(sha) {
+        const overall = document.getElementById('overall-comment');
+        let overallText = overall ? overall.value : '';
+        saveDraft();
+
         // Toggle: clicking the same commit deselects
         if (selectedCommitSha === sha) sha = null;
         selectedCommitSha = sha;
@@ -1031,8 +1170,17 @@
         } else {
             commitDiffFiles = null;
         }
+        const currentOverall = document.getElementById('overall-comment');
+        if (currentOverall) overallText = currentOverall.value;
+        saveDraft();
 
+        overallByReview.set(activeReviewId, overallText);
         render();
+        const nextOverall = document.getElementById('overall-comment');
+        if (nextOverall) {
+            nextOverall.value = overallText;
+            nextOverall.addEventListener('blur', saveDraft);
+        }
     }
 
     // --- Actions ---
@@ -1049,28 +1197,32 @@
             : '/api/review/deny';
     }
 
+    function disableActionBar() {
+        document.querySelectorAll('#action-bar button').forEach(function (btn) {
+            btn.disabled = true;
+        });
+    }
+
     async function handleApprove() {
         const overall = document.getElementById('overall-comment');
         const overallComment = overall ? overall.value.trim() : '';
-
+        const list = commentList();
+        if (list.length && !window.confirm('Approve with ' + list.length + ' line comment(s)?')) return;
+        disableActionBar();
+        if (mode === 'standalone') showSubmitted('approved');
         try {
             const res = await fetch(approveUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ overall_comment: overallComment }),
+                body: JSON.stringify({ overall_comment: overallComment, comments: list }),
             });
-            if (res.ok) {
-                if (mode === 'standalone') {
-                    showSubmitted('approved');
-                }
-                // In daemon mode, the SSE review_decided event handler triggers
-                // the tab styling. The user's view stays put; the tab fades and
-                // is removed by SSE events.
-            } else {
+            if (!res.ok) {
                 const data = await res.json();
+                restoreAfterDecisionError();
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         } catch (err) {
+            restoreAfterDecisionError();
             alert('Network error: ' + err.message);
         }
     }
@@ -1078,46 +1230,42 @@
     async function handleDeny() {
         const overall = document.getElementById('overall-comment');
         const overallComment = overall ? overall.value.trim() : '';
-
-        const commentList = [];
-        for (const c of comments.values()) {
-            commentList.push({ body: c.body, file: c.file, line: c.line });
-        }
-
-        if (commentList.length === 0 && !overallComment) {
-            // Prompt for at least some feedback
-            const overall2 = document.getElementById('overall-comment');
-            if (overall2) {
-                overall2.focus();
-                overall2.placeholder = 'Please explain what needs to change...';
-                overall2.style.borderColor = 'var(--red)';
-                setTimeout(() => { overall2.style.borderColor = ''; }, 3000);
+        const list = commentList();
+        if (list.length === 0 && !overallComment) {
+            if (overall) {
+                overall.focus();
+                overall.placeholder = 'Please explain what needs to change...';
+                overall.style.borderColor = 'var(--red)';
+                setTimeout(() => { overall.style.borderColor = ''; }, 3000);
             }
             return;
         }
-
+        if (list.length && !window.confirm('Request changes with ' + list.length + ' line comment(s)?')) return;
+        disableActionBar();
+        if (mode === 'standalone') showSubmitted('denied');
         try {
             const res = await fetch(denyUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    overall_comment: overallComment,
-                    comments: commentList,
-                }),
+                body: JSON.stringify({ overall_comment: overallComment, comments: list }),
             });
-            if (res.ok) {
-                if (mode === 'standalone') {
-                    showSubmitted('denied');
-                }
-                // In daemon mode, the SSE review_decided event handler triggers
-                // the tab styling.
-            } else {
+            if (!res.ok) {
                 const data = await res.json();
+                restoreAfterDecisionError();
                 alert('Error: ' + (data.error || 'Unknown error'));
             }
         } catch (err) {
+            restoreAfterDecisionError();
             alert('Network error: ' + err.message);
         }
+    }
+
+    function restoreAfterDecisionError() {
+        const overlay = document.getElementById('submitted-overlay');
+        if (overlay) overlay.remove();
+        document.querySelectorAll('#action-bar button').forEach(function (btn) {
+            btn.disabled = false;
+        });
     }
 
     function showSubmitted(decision) {
@@ -1251,11 +1399,14 @@
             review.fullData = await resp.json();
         }
         reviewData = review.fullData;
-        comments = commentsByReview.get(reviewId) || new Map();
+        const draft = loadDraft(reviewData);
+        comments = commentsByReview.get(reviewId) || draft.comments;
         render();
-        // Restore the overall-comment textarea after render
         const overallEl = document.getElementById('overall-comment');
-        if (overallEl) overallEl.value = overallByReview.get(reviewId) || '';
+        if (overallEl) {
+            overallEl.value = overallByReview.has(reviewId) ? overallByReview.get(reviewId) : draft.overall;
+            overallEl.addEventListener('blur', saveDraft);
+        }
     }
 
     function renderEmptyState() {
@@ -1364,8 +1515,14 @@
             const res = await fetch('/api/review');
             if (!res.ok) throw new Error('HTTP ' + res.status);
             reviewData = await res.json();
-            comments = new Map();
+            const draft = loadDraft(reviewData);
+            comments = draft.comments;
             render();
+            const overall = document.getElementById('overall-comment');
+            if (overall) {
+                overall.value = draft.overall;
+                overall.addEventListener('blur', saveDraft);
+            }
         } catch (err) {
             document.getElementById('app').innerHTML =
                 '<div id="loading"><div class="loading-text">Failed to load review data: ' +

@@ -219,7 +219,10 @@ class TestDecide:
 
         resp = await client.post(
             f"/api/queue/{review_id}/approve",
-            json={"overall_comment": "ship it"},
+            json={
+                "overall_comment": "ship it",
+                "comments": [{"body": "Rename this", "file": "src/main.py", "line": 8}],
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "approved"
@@ -228,6 +231,8 @@ class TestDecide:
         assert cached is not None
         assert cached.decision.decision == Decision.APPROVE
         assert cached.decision.overall_comment == "ship it"
+        assert cached.decision.comments[0].body == "Rename this"
+        assert cached.decision.comments[0].file == "src/main.py"
         assert cached.branch == "feature"
         assert cached.remote == "origin"
 

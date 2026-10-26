@@ -49,7 +49,10 @@ class TestApprove:
     async def test_approve(self, client: AsyncClient, server: ReviewServer) -> None:
         resp = await client.post(
             "/api/review/approve",
-            json={"overall_comment": "Looks good"},
+            json={
+                "overall_comment": "Looks good",
+                "comments": [{"body": "Check naming", "file": "main.py", "line": 4}],
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "approved"
@@ -57,6 +60,8 @@ class TestApprove:
         decision = await asyncio.wait_for(server.wait_for_decision(), timeout=1.0)
         assert decision.decision == Decision.APPROVE
         assert decision.overall_comment == "Looks good"
+        assert decision.comments[0].body == "Check naming"
+        assert decision.comments[0].file == "main.py"
 
     async def test_double_submit_rejected(self, client: AsyncClient, server: ReviewServer) -> None:
         await client.post("/api/review/approve", json={})

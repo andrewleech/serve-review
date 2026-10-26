@@ -15,7 +15,11 @@ if TYPE_CHECKING:
 
     import pytest
 
-from serve_review.git_ops import build_review_request, find_upstream_default
+from serve_review.git_ops import (
+    build_review_from_refs,
+    build_review_request,
+    find_upstream_default,
+)
 from serve_review.models import PushInfo
 
 
@@ -158,3 +162,18 @@ class TestBuildReviewRequest:
         # the second commit.
         assert len(review.commits) == 1
         assert review.commits[0].message == "second"
+
+    def test_plain_head_branch_is_preserved_in_push_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = _init_repo(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "review-branch")
+        head_sha = _commit(repo, "branch.txt", "branch\n", "branch commit")
+        _git(repo, "checkout", "-q", "main")
+        monkeypatch.chdir(repo)
+
+        review = build_review_from_refs("main", "review-branch")
+
+        assert review.push_info.local_ref == "refs/heads/review-branch"
+        assert review.push_info.remote_ref == "refs/heads/review-branch"
+        assert review.push_info.local_sha == head_sha

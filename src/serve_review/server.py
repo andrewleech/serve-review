@@ -80,11 +80,17 @@ class ReviewServer:
             return JSONResponse({"error": "Decision already made"}, status_code=409)
 
         body = await request.json()
-        overall = body.get("overall_comment", "")
-
         self.decision = ReviewDecision(
             decision=Decision.APPROVE,
-            overall_comment=overall,
+            comments=[
+                ReviewComment(
+                    body=c.get("body", ""),
+                    file=c.get("file"),
+                    line=c.get("line"),
+                )
+                for c in body.get("comments", [])
+            ],
+            overall_comment=body.get("overall_comment", ""),
         )
         self._decided.set()
         return JSONResponse({"status": "approved"})
