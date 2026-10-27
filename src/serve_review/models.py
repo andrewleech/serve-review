@@ -204,7 +204,6 @@ class ReviewDecision:
         )
 
 
-
 @dataclass
 class ReviewQueueItem:
     """A review in the daemon's queue. Tracks lifecycle through the status field."""

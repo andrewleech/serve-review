@@ -151,9 +151,7 @@ class TestCertificateManager:
 
     def test_provision_returns_false_on_subprocess_error(self, tmp_path: Path) -> None:
         """Provision fails gracefully on subprocess error."""
-        result = subprocess.CompletedProcess(
-            ["tailscale", "cert"], 1, "", "permission denied"
-        )
+        result = subprocess.CompletedProcess(["tailscale", "cert"], 1, "", "permission denied")
         manager = CertificateManager(tmp_path / "certs", runner=Mock(return_value=result))
         with patch.object(manager.detector, "get_hostname", return_value="host.ts.net"):
             assert manager.provision() is False
@@ -258,9 +256,7 @@ class TestCertificateManager:
     def _renewal_boundary_test(tmp_path: Path, days_until_expiry: int, expected: bool) -> None:
         certs_dir = tmp_path / "certs"
         certs_dir.mkdir()
-        crt_pem, _ = _generate_self_signed_pair(
-            "host.ts.net", days_valid=days_until_expiry
-        )
+        crt_pem, _ = _generate_self_signed_pair("host.ts.net", days_valid=days_until_expiry)
         (certs_dir / "host.ts.net.crt").write_bytes(crt_pem)
 
         manager = CertificateManager(certs_dir)
@@ -268,9 +264,7 @@ class TestCertificateManager:
             assert manager.check_renewal_needed() is expected
 
 
-def _generate_self_signed_pair(
-    common_name: str, days_valid: int = 90
-) -> tuple[bytes, bytes]:
+def _generate_self_signed_pair(common_name: str, days_valid: int = 90) -> tuple[bytes, bytes]:
     """Generate a self-signed cert/key pair as PEM bytes.
 
     Used by happy-path tests that need real cert content the manager will accept.
@@ -283,9 +277,7 @@ def _generate_self_signed_pair(
     from cryptography.x509.oid import NameOID
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, common_name)]
-    )
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
     now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()

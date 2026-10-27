@@ -77,6 +77,7 @@ def test_pr_description_file_reports_invalid_utf8(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert "cannot read PR description file" in result.output
 
+
 def test_pr_description_string_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(cli, "_run_review", lambda **kwargs: captured.update(kwargs))
@@ -114,6 +115,7 @@ def test_description_only_review_is_not_skipped(
 
     assert captured["review"] is sample_review
     assert sample_review.pr_description == "Description only"
+
 
 class TestDaemonStatus:
     def test_no_daemons(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -420,15 +422,11 @@ class TestDaemonStartFlag:
     def test_disable_tailscale_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
-        def fake_run_daemon(
-            host: str, port: int, disable_tailscale: bool | None = None
-        ) -> None:
+        def fake_run_daemon(host: str, port: int, disable_tailscale: bool | None = None) -> None:
             captured["disable_tailscale"] = disable_tailscale
 
         monkeypatch.setattr("serve_review.daemon.run_daemon", fake_run_daemon)
         runner = CliRunner()
-        result = runner.invoke(
-            cli.main, ["daemon", "start", "--disable-tailscale"]
-        )
+        result = runner.invoke(cli.main, ["daemon", "start", "--disable-tailscale"])
         assert result.exit_code == 0, result.output
         assert captured["disable_tailscale"] is True

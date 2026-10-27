@@ -157,6 +157,5 @@ def test_description_section_survives_both_decision_parsers() -> None:
         == "pr_description"
     )
     assert (
-        ReviewDecision.from_deny_body(body).to_dict()["comments"][0]["section"]
-        == "pr_description"
+        ReviewDecision.from_deny_body(body).to_dict()["comments"][0]["section"] == "pr_description"
     )

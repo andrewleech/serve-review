@@ -566,9 +566,7 @@ class DaemonServer:
         if sha not in valid_shas:
             return JSONResponse({"error": "unknown commit"}, status_code=404)
         files = get_commit_diff(sha)
-        return JSONResponse(
-            serialize_for_json([asdict(f) for f in files])
-        )
+        return JSONResponse(serialize_for_json([asdict(f) for f in files]))
 
     async def _client_decision_sse(self, request: Request) -> Response:
         review_id = request.path_params["id"]
@@ -673,9 +671,7 @@ def _configure_serve_review_logging() -> None:
     if any(getattr(h, "_serve_review_handler", False) for h in pkg_logger.handlers):
         return
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     handler._serve_review_handler = True  # type: ignore[attr-defined]
     pkg_logger.addHandler(handler)
     pkg_logger.setLevel(logging.INFO)

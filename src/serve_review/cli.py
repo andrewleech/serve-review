@@ -513,9 +513,7 @@ def _configure_cert_cli_logging() -> None:
     if any(getattr(h, "_serve_review_handler", False) for h in pkg_logger.handlers):
         return
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter("%(levelname)s: %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     handler._serve_review_handler = True  # type: ignore[attr-defined]
     pkg_logger.addHandler(handler)
     pkg_logger.setLevel(logging.INFO)

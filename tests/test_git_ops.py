@@ -127,6 +127,8 @@ class TestBuildReviewRequest:
         # Clone, then create a feature branch from before the advances.
         clone = tmp_path / "clone"
         _git(tmp_path, "clone", "-q", str(origin), str(clone))
+        _git(clone, "config", "user.name", "Test User")
+        _git(clone, "config", "user.email", "test@example.com")
         monkeypatch.chdir(clone)
 
         _git(clone, "checkout", "-q", "-b", "feature", "main~2")

@@ -645,9 +645,7 @@ class TestCancel:
             await asyncio.sleep(0.1)
         assert daemon.queue.get_review(review_id) is None
 
-    async def test_cancel_nonexistent_returns_409(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_cancel_nonexistent_returns_409(self, client: AsyncClient) -> None:
         resp = await client.post("/api/queue/no-such-id/cancel")
         assert resp.status_code == 409
 
