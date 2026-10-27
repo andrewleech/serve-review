@@ -23,14 +23,13 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
-
-from dataclasses import asdict
 
 from serve_review import cache
 from serve_review.git_ops import get_commit_diff, get_file_context
@@ -467,7 +466,7 @@ class DaemonServer:
         # Recompute the hash server-side. Trusting a client-supplied value
         # would let any reachable client claim a previously-approved hash for
         # an unrelated diff, replaying the cached APPROVE without review.
-        diff_hash = compute_diff_hash(review.files)
+        diff_hash = compute_diff_hash(review.files, review.pr_description)
 
         review_id, cached = self.queue.submit(review, diff_hash)
         if cached is not None:

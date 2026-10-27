@@ -46,6 +46,75 @@ class TestCliStructure:
         assert sig.parameters["standalone"].default is False
 
 
+def test_pr_description_cli_options_are_exclusive() -> None:
+    result = CliRunner().invoke(
+        cli.main, ["--pr-description", "inline", "--pr-description-file", "desc.md"]
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_pr_description_file_preserves_exact_utf8_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "description.md"
+    path.write_bytes("Title\r\n\ncafé".encode())
+    captured: dict[str, object] = {}
+
+    def capture(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "_run_review", capture)
+    result = CliRunner().invoke(cli.main, ["--pr-description-file", str(path)])
+    assert result.exit_code == 0, result.output
+    assert captured["pr_description"] == "Title\r\n\ncafé"
+
+
+def test_pr_description_file_reports_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.md"
+    path.write_bytes(b"\xff")
+    result = CliRunner().invoke(cli.main, ["--pr-description-file", str(path)])
+    assert result.exit_code != 0
+    assert "cannot read PR description file" in result.output
+
+def test_pr_description_string_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "_run_review", lambda **kwargs: captured.update(kwargs))
+    result = CliRunner().invoke(cli.main, ["--pr-description", "Exact\nMarkdown"])
+    assert result.exit_code == 0, result.output
+    assert captured["pr_description"] == "Exact\nMarkdown"
+
+
+def test_description_only_review_is_not_skipped(
+    sample_review: ReviewRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from serve_review.models import Decision, ReviewDecision
+
+    sample_review.commits.clear()
+    sample_review.files.clear()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "_build_default_review", lambda: sample_review)
+
+    def run_standalone(review, host, port, refresh_fn, is_hook):
+        captured["review"] = review
+        return ReviewDecision(decision=Decision.APPROVE)
+
+    monkeypatch.setattr(cli, "_run_standalone", run_standalone)
+    cli._run_review(
+        mode="manual",
+        hook_args=(),
+        base=None,
+        head=None,
+        host="127.0.0.1",
+        port=8567,
+        standalone=True,
+        pr_description="Description only",
+    )
+
+    assert captured["review"] is sample_review
+    assert sample_review.pr_description == "Description only"
+
 class TestDaemonStatus:
     def test_no_daemons(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("serve_review.cache.list_daemons", lambda: [])

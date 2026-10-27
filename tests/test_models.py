@@ -8,6 +8,7 @@ from serve_review.models import (
     ReviewComment,
     ReviewDecision,
     ReviewRequest,
+    compute_diff_hash,
     guess_language,
     scan_attention,
 )
@@ -97,6 +98,7 @@ class TestReviewDecision:
         assert len(result["comments"]) == 2
         assert result["comments"][0]["file"] == "header.h"
         assert result["comments"][1]["file"] is None
+        assert "section" not in result["comments"][0]
 
     def test_from_dict_round_trip_approve(self) -> None:
         original = ReviewDecision(decision=Decision.APPROVE, overall_comment="LGTM")
@@ -133,3 +135,28 @@ class TestReviewRequestSerialization:
 
         # Should not raise; enums must already be unwrapped.
         json.dumps(sample_review.to_dict())
+
+
+def test_review_description_round_trip(sample_review: ReviewRequest) -> None:
+    sample_review.pr_description = "First line\n\n**Markdown**"
+    rebuilt = ReviewRequest.from_dict(sample_review.to_dict())
+    assert rebuilt.pr_description == sample_review.pr_description
+
+
+def test_description_changes_diff_hash(sample_review: ReviewRequest) -> None:
+    assert compute_diff_hash(sample_review.files) == compute_diff_hash(sample_review.files, "")
+    assert compute_diff_hash(sample_review.files, "one") != compute_diff_hash(
+        sample_review.files, "two"
+    )
+
+
+def test_description_section_survives_both_decision_parsers() -> None:
+    body = {"comments": [{"body": "Clarify this", "section": "pr_description"}]}
+    assert (
+        ReviewDecision.from_approve_body(body).to_dict()["comments"][0]["section"]
+        == "pr_description"
+    )
+    assert (
+        ReviewDecision.from_deny_body(body).to_dict()["comments"][0]["section"]
+        == "pr_description"
+    )

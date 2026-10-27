@@ -38,17 +38,21 @@ Note: `--help` says "do not background" - that warning is about naive `&` which 
 # Default: current branch vs its upstream
 serve-review
 
-# Explicit range
+# Explicit range, served through the shared daemon
 serve-review --base <ref> --head <ref>
 
-# Single commit (one-shot server, no daemon)
-serve-review --standalone --base <commit>^ --head <commit>
+# Review one commit
+serve-review --base <commit>^ --head <commit>
 
-# Specific range, one-shot
-serve-review --standalone --base cb6ef9bb7b --head e66b85847c
+# Include a PR description from a Markdown file
+serve-review --base origin/main --head HEAD --pr-description-file description.md
+
+# Or pass the description directly
+serve-review --base origin/main --head HEAD --pr-description "## Summary: short description"
 ```
 
-`--standalone` bypasses the daemon for a one-shot review that honors the exact range.
+The daemon uses the explicit base and head refs. `--head` can name a branch or commit that is not checked out.
+Use `--pr-description-file` to review a PR body with the diff, or pass its Markdown directly with `--pr-description`. The description appears at the top of the review and accepts a separate comment.
 
 ## Reading the verdict
 
@@ -62,7 +66,8 @@ On denial, **stdout** contains JSON with the reviewer's comments:
   "decision": "deny",
   "overall_comment": "...",
   "comments": [
-    {"body": "...", "file": "path/to/file.py", "line": 42}
+    {"body": "...", "file": "path/to/file.py", "line": 42},
+    {"body": "...", "file": null, "line": null, "section": "pr_description"}
   ]
 }
 ```

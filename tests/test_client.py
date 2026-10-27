@@ -293,7 +293,8 @@ class TestSubmitAndWait:
         sample_review: ReviewRequest,
     ) -> None:
         _, port = live_daemon
-        diff_hash = compute_diff_hash(sample_review.files)
+        sample_review.pr_description = "# Proposal\n\nChanged description"
+        diff_hash = compute_diff_hash(sample_review.files, sample_review.pr_description)
         cache.store_decision(
             diff_hash,
             ReviewDecision(decision=Decision.APPROVE, overall_comment="prior"),

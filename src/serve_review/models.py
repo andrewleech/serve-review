@@ -8,7 +8,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from dataclasses import fields as dataclass_fields
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 
 def serialize_for_json(obj: Any) -> Any:
@@ -107,9 +107,15 @@ class ReviewRequest:
     commits: list[CommitInfo]
     files: list[FileDiff]
     has_attention_flags: bool = False
+    pr_description: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return serialize_for_json(asdict(self))  # type: ignore[no-any-return]
+        data = cast("dict[str, Any]", serialize_for_json(asdict(self)))
+        if self.pr_description is not None:
+            from serve_review.markdown_renderer import render_markdown
+
+            data["pr_description_html"] = render_markdown(self.pr_description)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReviewRequest:
@@ -122,6 +128,7 @@ class ReviewRequest:
             commits=[CommitInfo(**c) for c in data.get("commits", [])],
             files=[_file_diff_from_dict(f) for f in data.get("files", [])],
             has_attention_flags=data.get("has_attention_flags", False),
+            pr_description=data.get("pr_description"),
         )
 
 
@@ -130,6 +137,7 @@ class ReviewComment:
     body: str
     file: str | None = None
     line: int | None = None
+    section: str | None = None
 
 
 @dataclass
@@ -139,7 +147,11 @@ class ReviewDecision:
     overall_comment: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return serialize_for_json(asdict(self))  # type: ignore[no-any-return]
+        data = cast("dict[str, Any]", serialize_for_json(asdict(self)))
+        for comment in data["comments"]:
+            if comment["section"] is None:
+                del comment["section"]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReviewDecision:
@@ -151,6 +163,7 @@ class ReviewDecision:
                     body=c["body"],
                     file=c.get("file"),
                     line=c.get("line"),
+                    section=c.get("section"),
                 )
                 for c in data.get("comments", [])
             ],
@@ -167,6 +180,7 @@ class ReviewDecision:
                     body=c["body"],
                     file=c.get("file"),
                     line=c.get("line"),
+                    section=c.get("section"),
                 )
                 for c in body.get("comments", [])
             ],
@@ -183,10 +197,12 @@ class ReviewDecision:
                     body=c["body"],
                     file=c.get("file"),
                     line=c.get("line"),
+                    section=c.get("section"),
                 )
                 for c in body.get("comments", [])
             ],
         )
+
 
 
 @dataclass
@@ -275,14 +291,8 @@ def _file_diff_from_dict(data: dict[str, Any]) -> FileDiff:
 _HASH_SEP = b"\x00"
 
 
-def compute_diff_hash(files: list[FileDiff]) -> str:
-    """SHA256 over diff content only, stable across rebases that don't change content.
-
-    Hashes new_path + line_type + content for every line, with a NUL separator
-    between every field and a double NUL between files. Excludes commit SHAs,
-    timestamps, and push metadata so a rebase that keeps the same final content
-    hits the same cache entry as the original review.
-    """
+def compute_diff_hash(files: list[FileDiff], pr_description: str | None = None) -> str:
+    """SHA256 over diff content and optional PR description."""
     h = hashlib.sha256()
     for f in sorted(files, key=lambda x: x.new_path):
         h.update(f.new_path.encode("utf-8"))
@@ -293,7 +303,11 @@ def compute_diff_hash(files: list[FileDiff]) -> str:
                 h.update(_HASH_SEP)
                 h.update(line.content.encode("utf-8"))
                 h.update(_HASH_SEP)
-        h.update(_HASH_SEP)  # extra separator marks file boundary
+        h.update(_HASH_SEP)
+    if pr_description:
+        h.update(b"pr_description")
+        h.update(_HASH_SEP)
+        h.update(pr_description.encode("utf-8"))
     return h.hexdigest()
 
 

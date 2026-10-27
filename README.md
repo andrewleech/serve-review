@@ -125,6 +125,10 @@ serve-review
 
 # Diff between specific refs
 serve-review --base origin/main --head HEAD
+
+# Include the PR description inline or from a UTF-8 Markdown file
+serve-review --base origin/main --head HEAD --pr-description "## Summary: short description"
+serve-review --base origin/main --head HEAD --pr-description-file description.md
 ```
 
 The command blocks in the foreground and prints the review URL to stderr. Do not background it with `&` - the URL output will be lost and the process will exit when the terminal closes.
@@ -133,12 +137,9 @@ The command blocks in the foreground and prints the review URL to stderr. Do not
 
 Dark-themed, mobile-first diff viewer on port 8567. Bundled Prism.js for syntax highlighting.
 
-- Unified diff with collapsible file sections
-- Commit list with full messages, click to filter diff to one commit's files
-- Attention flags: added lines containing email addresses, URLs, copyright text, author attributions, or license keywords get an amber highlight. A banner links to the first flagged line
+- PR description display with Markdown rendering, plus a saved comment that appears in the comment summary and jumps back to the description
 - Line-level inline comments, similar to GitHub's review UI
 - Approve / Request Changes buttons in a fixed bottom bar
-
 Installable as a PWA on Android Chrome. Static port means you can pin it to your home screen and it stays at the same address. **Note:** PWA installation requires HTTPS; see [HTTPS setup](#https) below.
 
 ## Configuration
@@ -246,12 +247,18 @@ When you deny, comments are written to stdout as JSON. An AI agent that called `
       "body": "This name doesn't exist in the project, remove it",
       "file": "lib/header.h",
       "line": 1
-    }
+    },
+    {
+      "body": "This description does not match the implementation",
+      "file": null,
+      "line": null,
+      "section": "pr_description"
+    },
   ]
 }
 ```
 
-A human-readable summary of the same content goes to stderr.
+Each comment has a `body`. A line comment also has `file` and `line`; a PR description comment has `section: "pr_description"` instead. Description comments appear in the saved-comment summary and link to the PR description. A human-readable summary of the same content goes to stderr.
 
 ## Development
 

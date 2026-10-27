@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.resources
 import json
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,11 +19,8 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from serve_review.git_ops import get_commit_diff, get_file_context
-from dataclasses import asdict
-
 from serve_review.models import (
     Decision,
-    ReviewComment,
     ReviewDecision,
     ReviewRequest,
     serialize_for_json,
@@ -80,18 +78,7 @@ class ReviewServer:
             return JSONResponse({"error": "Decision already made"}, status_code=409)
 
         body = await request.json()
-        self.decision = ReviewDecision(
-            decision=Decision.APPROVE,
-            comments=[
-                ReviewComment(
-                    body=c.get("body", ""),
-                    file=c.get("file"),
-                    line=c.get("line"),
-                )
-                for c in body.get("comments", [])
-            ],
-            overall_comment=body.get("overall_comment", ""),
-        )
+        self.decision = ReviewDecision.from_approve_body(body)
         self._decided.set()
         return JSONResponse({"status": "approved"})
 
@@ -100,21 +87,7 @@ class ReviewServer:
             return JSONResponse({"error": "Decision already made"}, status_code=409)
 
         body = await request.json()
-        comments = [
-            ReviewComment(
-                body=c.get("body", ""),
-                file=c.get("file"),
-                line=c.get("line"),
-            )
-            for c in body.get("comments", [])
-        ]
-        overall = body.get("overall_comment", "")
-
-        self.decision = ReviewDecision(
-            decision=Decision.DENY,
-            comments=comments,
-            overall_comment=overall,
-        )
+        self.decision = ReviewDecision.from_deny_body(body)
         self._decided.set()
         return JSONResponse({"status": "denied"})
 
@@ -219,12 +192,15 @@ def format_decision_human(decision: ReviewDecision) -> str:
         lines.append(f"\n{decision.overall_comment}")
 
     for comment in decision.comments:
-        loc = ""
-        if comment.file:
-            loc = comment.file
-            if comment.line is not None:
-                loc += f":{comment.line}"
-            loc += " - "
+        if comment.section == "pr_description":
+            loc = "[PR description] "
+        else:
+            loc = ""
+            if comment.file:
+                loc = comment.file
+                if comment.line is not None:
+                    loc += f":{comment.line}"
+                loc += " - "
         lines.append(f"\n  {loc}{comment.body}")
 
     return "\n".join(lines)

@@ -321,7 +321,7 @@ def submit_and_wait(
     Returns ``(decision, cached_at_iso_or_None)``. ``cached_at`` is non-None
     iff the daemon served the decision from cache without enqueuing.
     """
-    diff_hash = compute_diff_hash(review.files)
+    diff_hash = compute_diff_hash(review.files, review.pr_description)
     ensure_daemon(host, port)
 
     review_id, cached_decision, cached_at = submit_review(port, review, diff_hash)

@@ -846,6 +846,108 @@ mark.attention-flag {
     vertical-align: middle;
 }
 
+/* --- PR description --- */
+
+#pr-description {
+    margin: 16px;
+    padding: 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--bg-surface);
+    overflow-wrap: anywhere;
+}
+
+#pr-description h2,
+.pr-description-body h1,
+.pr-description-body h2,
+.pr-description-body h3 {
+    margin: 0 0 10px;
+    color: var(--text-primary);
+    font-size: var(--font-size-lg);
+}
+
+.pr-description-body {
+    color: var(--text-secondary);
+    line-height: 1.65;
+}
+
+.pr-description-body > * + * {
+    margin-top: 10px;
+}
+
+.pr-description-body ul,
+.pr-description-body ol {
+    padding-left: 24px;
+}
+
+.pr-description-body blockquote {
+    padding-left: 12px;
+    border-left: 2px solid var(--border-strong);
+    color: var(--text-secondary);
+}
+
+.pr-description-body pre {
+    overflow-x: auto;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-input);
+}
+
+.pr-description-body code {
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+
+.pr-description-body pre code {
+    padding: 0;
+    background: none;
+}
+
+.pr-description-body a {
+    color: var(--amber);
+    text-decoration: underline;
+}
+
+#pr-description-comment {
+    display: block;
+    width: 100%;
+    min-height: 72px;
+    margin-top: 14px;
+    padding: 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font: inherit;
+    resize: vertical;
+}
+
+#pr-description-comment:focus {
+    outline: none;
+    border-color: var(--amber-border);
+}
+
+#pr-description > button {
+    min-height: 36px;
+    margin: 8px 8px 0 0;
+    padding: 6px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font: inherit;
+    cursor: pointer;
+}
+
+#pr-description > .btn-save {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+}
+
 /* --- Overall comment --- */
 
 #overall-section {

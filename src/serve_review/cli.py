@@ -14,6 +14,8 @@ from serve_review import cache
 from serve_review.models import Decision
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from serve_review.models import ReviewDecision, ReviewRequest
 
 DEFAULT_PORT = 8567
@@ -30,6 +32,17 @@ DEFAULT_PORT = 8567
 @click.option("--base", default=None, help="Base ref for manual diff (instead of hook stdin).")
 @click.option("--head", default=None, help="Head ref for manual diff (defaults to HEAD).")
 @click.option(
+    "--pr-description",
+    default=None,
+    help="Markdown PR description to include in the review.",
+)
+@click.option(
+    "--pr-description-file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Read the Markdown PR description from a UTF-8 file.",
+)
+@click.option(
     "--standalone",
     is_flag=True,
     help="Bypass the daemon and run a one-shot standalone server.",
@@ -42,6 +55,8 @@ def main(
     base: str | None,
     head: str | None,
     standalone: bool,
+    pr_description: str | None,
+    pr_description_file: Path | None,
 ) -> None:
     """Pre-push review gate with mobile-friendly web UI.
 
@@ -63,6 +78,16 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
+    if pr_description is not None and pr_description_file is not None:
+        raise click.UsageError("--pr-description and --pr-description-file are mutually exclusive")
+    if pr_description_file is not None:
+        try:
+            pr_description = pr_description_file.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise click.ClickException(
+                f"cannot read PR description file {pr_description_file}: {exc}"
+            ) from exc
+
     try:
         _run_review(
             mode="manual",
@@ -72,6 +97,7 @@ def main(
             host=host,
             port=port,
             standalone=standalone,
+            pr_description=pr_description,
         )
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -186,6 +212,7 @@ def _run_review(
     host: str,
     port: int,
     standalone: bool = False,
+    pr_description: str | None = None,
 ) -> None:
     from serve_review.cache import cache_age_human
     from serve_review.client import (
@@ -200,7 +227,7 @@ def _run_review(
 
     is_hook = mode in ("hook", "claude-hook")
 
-    refresh_fn = None
+    refresh_fn: Callable[[], ReviewRequest] | None = None
     if mode == "hook":
         # Git passes <remote-name> <remote-url> as positional args to pre-push hooks
         remote_name = hook_args[0] if len(hook_args) > 0 else "origin"
@@ -220,9 +247,19 @@ def _run_review(
         # mode == "manual" with no base, or mode == "claude-hook"
         review = _build_default_review()
         refresh_fn = _build_default_review
+    review.pr_description = pr_description
+    if refresh_fn is not None:
+        original_refresh: Callable[[], ReviewRequest] = refresh_fn
 
-    if not review.commits and not review.files:
-        click.echo("Nothing to review: no commits or changes between base and HEAD.", err=True)
+        def refresh_review() -> ReviewRequest:
+            refreshed = original_refresh()
+            refreshed.pr_description = pr_description
+            return refreshed
+
+        refresh_fn = refresh_review
+
+    if not review.commits and not review.files and pr_description is None:
+        click.echo("Nothing to review: no commits, changes, or PR description.", err=True)
         sys.exit(0)
 
     if standalone:
@@ -236,7 +273,7 @@ def _run_review(
         try:
             ensure_daemon(host, port)
             daemon_ready = True
-            diff_hash = compute_diff_hash(review.files)
+            diff_hash = compute_diff_hash(review.files, review.pr_description)
             review_id, cached_decision, cached_at = submit_review(port, review, diff_hash)
             if cached_decision is not None:
                 age = cache_age_human(cached_at) if cached_at else "unknown age"
@@ -305,7 +342,7 @@ def _run_standalone(
         from serve_review import cache as _cache
         from serve_review.daemon import _strip_refs_heads
 
-        diff_hash = compute_diff_hash(review.files)
+        diff_hash = compute_diff_hash(review.files, review.pr_description)
         branch = _strip_refs_heads(review.push_info.local_ref)
         _cache.store_decision(
             diff_hash,

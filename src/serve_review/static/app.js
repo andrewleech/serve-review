@@ -17,17 +17,28 @@
 
     // --- Helpers ---
     function draftStorageKey(data) {
-        return 'serve-review-draft:' + data.push_info.local_sha + ':' +
+        const base = 'serve-review-draft:' + data.push_info.local_sha + ':' +
             data.files.map(file => file.new_path).join('|');
+        if (data.pr_description === null || data.pr_description === undefined) return base;
+        let descriptionHash = 0;
+        for (const char of data.pr_description) {
+            descriptionHash = ((descriptionHash * 31) + char.charCodeAt(0)) | 0;
+        }
+        return base + ':' + descriptionHash;
     }
 
     function loadDraft(data) {
         try {
             const draft = JSON.parse(localStorage.getItem(draftStorageKey(data)) || '{}');
-            return { comments: new Map((draft.comments || []).map(c =>
-                [commentKey(c.file, c.line), c])), overall: draft.overall || '' };
+            return {
+                comments: new Map((draft.comments || []).map(c =>
+                    [c.section === 'pr_description' ? 'pr_description' : commentKey(c.file, c.line), c])),
+                overall: draft.overall || '',
+                descriptionComment: draft.descriptionComment || '',
+                hasDescriptionComment: Object.prototype.hasOwnProperty.call(draft, 'descriptionComment'),
+            };
         } catch (e) {
-            return { comments: new Map(), overall: '' };
+            return { comments: new Map(), overall: '', descriptionComment: '', hasDescriptionComment: false };
         }
     }
 
@@ -38,6 +49,10 @@
             (overallByReview.has(activeReviewId)
                 ? overallByReview.get(activeReviewId)
                 : loadDraft(reviewData).overall);
+        const descriptionInput = document.querySelector('#pr-description-comment');
+        const descriptionComment = descriptionInput
+            ? descriptionInput.value
+            : (comments.get('pr_description') || {}).body || loadDraft(reviewData).descriptionComment;
         if (overall && activeReviewId !== null) {
             overallByReview.set(activeReviewId, overall.value);
         }
@@ -45,13 +60,17 @@
             localStorage.setItem(draftStorageKey(reviewData), JSON.stringify({
                 comments: Array.from(comments.values()),
                 overall: storedOverall,
+                descriptionComment,
             }));
         } catch (e) {}
     }
 
     function commentList() {
-        return Array.from(comments.values(), c => ({ body: c.body, file: c.file, line: c.line }));
+        return Array.from(comments.values(), c => ({
+            body: c.body, file: c.file, line: c.line, section: c.section
+        }));
     }
+
 
     function esc(str) {
         const d = document.createElement('div');
@@ -150,6 +169,9 @@
         // Mobile file nav (hidden on desktop via CSS)
         const mobileNav = renderMobileFileNav();
         main.appendChild(mobileNav);
+
+        const descriptionSection = renderPrDescription();
+        if (descriptionSection) main.appendChild(descriptionSection);
 
         // File diffs (use per-commit diff when viewing a single commit)
         const filesToShow = commitDiffFiles !== null ? commitDiffFiles : reviewData.files;
@@ -345,13 +367,17 @@
                 link.className = 'saved-comment-link';
                 const location = document.createElement('span');
                 location.className = 'saved-comment-location';
-                location.textContent = comment.file + ':' + comment.line;
+                location.textContent = comment.section === 'pr_description'
+                    ? 'PR description' : comment.file + ':' + comment.line;
                 const excerpt = document.createElement('span');
                 excerpt.className = 'saved-comment-excerpt';
                 excerpt.textContent = comment.body.replace(/\s+/g, ' ').trim();
                 link.appendChild(location);
                 link.appendChild(excerpt);
-                link.addEventListener('click', () => jumpToComment(comment));
+                link.addEventListener('click', () => {
+                    if (comment.section === 'pr_description') jumpToDescription();
+                    else jumpToComment(comment);
+                });
                 item.appendChild(link);
                 list.appendChild(item);
             }
@@ -375,6 +401,10 @@
         };
         if (commitDiffFiles !== null) selectCommit(null).then(jump);
         else jump();
+    }
+    function jumpToDescription() {
+        const section = document.getElementById('pr-description');
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function renderMobileFileNav() {
@@ -913,21 +943,80 @@
     function renderOverallComment() {
         const section = document.createElement('div');
         section.id = 'overall-section';
-
         const label = document.createElement('label');
         label.htmlFor = 'overall-comment';
         label.textContent = 'Overall comment';
         section.appendChild(label);
         const textarea = document.createElement('textarea');
-
-
         textarea.id = 'overall-comment';
         textarea.placeholder = 'Optional overall comment...';
+        textarea.value = overallByReview.has(activeReviewId)
+            ? overallByReview.get(activeReviewId) : loadDraft(reviewData).overall;
         textarea.addEventListener('input', saveDraft);
         section.appendChild(textarea);
-
         return section;
     }
+
+    function renderPrDescription() {
+        if (reviewData.pr_description === null || reviewData.pr_description === undefined) return null;
+        const section = document.createElement('section');
+        section.id = 'pr-description';
+        const heading = document.createElement('h2');
+        heading.textContent = 'PR description';
+        section.appendChild(heading);
+        const body = document.createElement('div');
+        body.className = 'pr-description-body';
+        body.innerHTML = reviewData.pr_description_html;
+        section.appendChild(body);
+        const existing = comments.get('pr_description');
+        const textarea = document.createElement('textarea');
+        textarea.id = 'pr-description-comment';
+        textarea.placeholder = 'Comment on the PR description...';
+        const draft = loadDraft(reviewData);
+        textarea.value = draft.hasDescriptionComment
+            ? draft.descriptionComment : existing ? existing.body : '';
+        textarea.addEventListener('input', saveDraft);
+        const save = document.createElement('button');
+        save.className = 'btn-save';
+        save.textContent = existing ? 'Update description comment' : 'Save description comment';
+        textarea.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                e.preventDefault();
+                save.click();
+            }
+        });
+        save.addEventListener('click', () => {
+            saveDescriptionComment();
+            render();
+        });
+        section.appendChild(textarea);
+        section.appendChild(save);
+        if (existing) {
+            const del = document.createElement('button');
+            del.className = 'btn-cancel';
+            del.textContent = 'Delete description comment';
+            del.addEventListener('click', () => {
+                comments.delete('pr_description');
+                textarea.value = '';
+                saveDraft();
+                render();
+            });
+            section.appendChild(del);
+        }
+        return section;
+    }
+
+    function saveDescriptionComment() {
+        const textarea = document.getElementById('pr-description-comment');
+        if (!textarea) return;
+        const body = textarea.value.trim();
+        if (body) comments.set('pr_description', { body, section: 'pr_description' });
+        else comments.delete('pr_description');
+        saveDraft();
+        updateSavedComments();
+        updateCommentCount();
+    }
+
 
     function renderActionBar() {
         const bar = document.createElement('div');
@@ -1205,9 +1294,10 @@
 
     async function handleApprove() {
         const overall = document.getElementById('overall-comment');
+        saveDescriptionComment();
         const overallComment = overall ? overall.value.trim() : '';
         const list = commentList();
-        if (list.length && !window.confirm('Approve with ' + list.length + ' line comment(s)?')) return;
+        if (list.length && !window.confirm('Approve with ' + list.length + ' comment(s)?')) return;
         disableActionBar();
         if (mode === 'standalone') showSubmitted('approved');
         try {
@@ -1229,6 +1319,7 @@
 
     async function handleDeny() {
         const overall = document.getElementById('overall-comment');
+        saveDescriptionComment();
         const overallComment = overall ? overall.value.trim() : '';
         const list = commentList();
         if (list.length === 0 && !overallComment) {
@@ -1240,7 +1331,7 @@
             }
             return;
         }
-        if (list.length && !window.confirm('Request changes with ' + list.length + ' line comment(s)?')) return;
+        if (list.length && !window.confirm('Request changes with ' + list.length + ' comment(s)?')) return;
         disableActionBar();
         if (mode === 'standalone') showSubmitted('denied');
         try {
