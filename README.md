@@ -103,7 +103,7 @@ Installs a skill that teaches Claude how to launch reviews correctly (tool disam
 serve-review install-skill
 ```
 
-Copies the skill to `~/.claude/skills/serve-review/`, making it available in all Claude Code sessions.
+Installs the skill under each existing `~/.claude` and `~/.omp` configuration directory. If neither exists, it creates the Claude Code destination at `~/.claude/skills/serve-review/`.
 
 ### Claude Code hook
 

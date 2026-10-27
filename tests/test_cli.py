@@ -86,6 +86,53 @@ def test_pr_description_string_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured["pr_description"] == "Exact\nMarkdown"
 
 
+def test_install_skill_to_existing_claude_and_omp_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+    claude_home = tmp_path / ".claude"
+    omp_home = tmp_path / ".omp"
+    claude_home.mkdir()
+    omp_home.mkdir()
+
+    result = CliRunner().invoke(cli.main, ["install-skill"])
+
+    assert result.exit_code == 0, result.output
+    for home in (claude_home, omp_home):
+        installed = home / "skills" / "serve-review" / "SKILL.md"
+        assert (
+            installed.read_text()
+            == (Path(__file__).parents[1] / "src/serve_review/skill/SKILL.md").read_text()
+        )
+        assert str(installed.parent) in result.output
+
+
+def test_install_skill_uses_omp_home_when_it_is_the_only_existing_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+    omp_home = tmp_path / ".omp"
+    omp_home.mkdir()
+
+    result = CliRunner().invoke(cli.main, ["install-skill"])
+
+    assert result.exit_code == 0, result.output
+    assert (omp_home / "skills" / "serve-review" / "SKILL.md").is_file()
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_install_skill_defaults_to_claude_when_no_config_home_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+
+    result = CliRunner().invoke(cli.main, ["install-skill"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".claude/skills/serve-review/SKILL.md").is_file()
+    assert not (tmp_path / ".omp").exists()
+
+
 def test_description_only_review_is_not_skipped(
     sample_review: ReviewRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

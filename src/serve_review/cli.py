@@ -670,7 +670,7 @@ def install_claude_hook(port: int, global_: bool) -> None:
 
 @main.command("install-skill")
 def install_skill() -> None:
-    """Install the Claude Code skill to ~/.claude/skills/serve-review/.
+    """Install the Claude Code skill to existing ~/.claude and ~/.omp homes.
 
     The skill teaches Claude how to launch serve-review reviews correctly,
     including tool disambiguation and the agent launch pattern.
@@ -678,14 +678,22 @@ def install_skill() -> None:
     import importlib.resources
 
     skill_src = importlib.resources.files("serve_review").joinpath("skill")
-    dest = Path.home() / ".claude" / "skills" / "serve-review"
-    dest.mkdir(parents=True, exist_ok=True)
+    home = Path.home()
+    config_homes = [
+        config_home for config_home in (home / ".claude", home / ".omp") if config_home.is_dir()
+    ]
+    if not config_homes:
+        config_homes = [home / ".claude"]
 
-    for item in skill_src.iterdir():
-        dest_file = dest / item.name
-        dest_file.write_bytes(item.read_bytes())
+    for config_home in config_homes:
+        dest = config_home / "skills" / "serve-review"
+        dest.mkdir(parents=True, exist_ok=True)
 
-    click.echo(f"Installed serve-review skill to {dest}")
+        for item in skill_src.iterdir():
+            dest_file = dest / item.name
+            dest_file.write_bytes(item.read_bytes())
+
+        click.echo(f"Installed serve-review skill to {dest}")
 
 
 def _build_default_review() -> ReviewRequest:
