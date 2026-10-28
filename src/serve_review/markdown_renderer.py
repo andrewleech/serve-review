@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from markdown_it import MarkdownIt
+from mdit_py_plugins.gfm import gfm_plugin
 
 
 def _is_safe_link(url: str) -> bool:
@@ -20,9 +21,11 @@ class SafeMarkdownIt(MarkdownIt):
         return _is_safe_link(url)
 
 
-_MARKDOWN = SafeMarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+_MARKDOWN = SafeMarkdownIt(
+    "commonmark", {"html": False, "linkify": False, "typographer": False}
+).use(gfm_plugin)
 
 
 def render_markdown(markdown: str) -> str:
-    """Render CommonMark without raw HTML or unsafe link protocols."""
+    """Render GitHub-style Markdown without raw HTML or unsafe link protocols."""
     return cast("str", _MARKDOWN.render(markdown))

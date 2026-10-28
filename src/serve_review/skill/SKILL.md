@@ -52,7 +52,7 @@ serve-review --base origin/main --head HEAD --pr-description "## Summary: short 
 ```
 
 The daemon uses the explicit base and head refs. `--head` can name a branch or commit that is not checked out.
-Use `--pr-description-file` to review a PR body with the diff, or pass its Markdown directly with `--pr-description`. The description appears at the top of the review and accepts a separate comment.
+Use `--pr-description-file` to review a PR body with the diff, or pass its Markdown directly with `--pr-description`. The description appears at the top of the review and accepts a separate comment. GitHub-style Markdown and Mermaid code fences render in the description; invalid diagrams display their source.
 
 ## Reading the verdict
 

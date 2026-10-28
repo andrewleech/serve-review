@@ -135,9 +135,9 @@ The command blocks in the foreground and prints the review URL to stderr. Do not
 
 ## The review UI
 
-Dark-themed, mobile-first diff viewer on port 8567. Bundled Prism.js for syntax highlighting.
+Dark-themed, mobile-first diff viewer on port 8567. Prism.js and Mermaid 11.12.2 are bundled for offline use.
 
-- PR description display with Markdown rendering, plus a saved comment that appears in the comment summary and jumps back to the description
+- PR descriptions support GitHub-style Markdown, including tables, task lists, alerts, and Mermaid fenced diagrams. Invalid diagrams display their source. A saved description comment appears in the comment summary and jumps back to the description.
 - Line-level inline comments, similar to GitHub's review UI
 - Approve / Request Changes buttons in a fixed bottom bar
 Installable as a PWA on Android Chrome. Static port means you can pin it to your home screen and it stays at the same address. **Note:** PWA installation requires HTTPS; see [HTTPS setup](#https) below.

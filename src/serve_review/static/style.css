@@ -906,6 +906,78 @@ mark.attention-flag {
     background: none;
 }
 
+.pr-description-body .pr-diagram {
+    overflow-x: auto;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-input);
+    text-align: center;
+}
+
+.pr-description-body .pr-diagram svg {
+    max-width: 100%;
+    height: auto;
+}
+
+.pr-description-body .mermaid-error {
+    border-color: var(--amber-border);
+}
+
+.pr-description-body .mermaid-error-message {
+    color: var(--amber);
+}
+
+.pr-description-body .contains-task-list {
+    list-style: none;
+}
+
+.pr-description-body .task-list-item-checkbox {
+    margin-right: 6px;
+}
+
+.pr-description-body .markdown-alert {
+    padding-left: 12px;
+    border-left: 2px solid var(--border-strong);
+}
+
+.pr-description-body .markdown-alert-title {
+    color: var(--text-primary);
+    font-weight: bold;
+}
+
+.pr-description-body .markdown-alert-warning {
+    border-color: var(--amber);
+}
+
+.pr-description-body .markdown-alert-caution {
+    border-color: var(--red-bright);
+}
+
+.pr-description-body .markdown-alert-tip {
+    border-color: var(--green-bright);
+}
+
+.pr-description-body table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+
+.pr-description-body th,
+.pr-description-body td {
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    text-align: left;
+}
+
+.pr-description-body th {
+    color: var(--text-primary);
+    background: var(--bg-elevated);
+}
+
 .pr-description-body a {
     color: var(--amber);
     text-decoration: underline;

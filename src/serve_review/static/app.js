@@ -14,6 +14,25 @@
     let activeCommentForm = null;        // {file, line, row} of currently open form
     let selectedCommitSha = null;        // when set, diff is filtered to this commit's files
     let commitDiffFiles = null;          // per-commit diff files (fetched on demand)
+    let diagramId = 0;
+
+    if (window.mermaid) {
+        window.mermaid.initialize({
+            startOnLoad: false,
+            securityLevel: 'strict',
+            suppressErrorRendering: true,
+            htmlLabels: false,
+            flowchart: { htmlLabels: false },
+            theme: 'dark',
+            secure: [
+                'secure', 'securityLevel', 'startOnLoad', 'suppressErrorRendering',
+                'theme', 'themeCSS', 'themeVariables', 'fontFamily', 'altFontFamily',
+                'dompurifyConfig', 'htmlLabels', 'flowchart', 'sequence', 'gantt',
+                'class', 'state', 'er', 'journey', 'timeline', 'gitGraph',
+                'quadrantChart', 'mindmap', 'maxTextSize', 'maxEdges'
+            ],
+        });
+    }
 
     // --- Helpers ---
     function draftStorageKey(data) {
@@ -184,6 +203,7 @@
 
         layout.appendChild(main);
         app.appendChild(layout);
+        if (descriptionSection) renderDescriptionDiagrams(descriptionSection);
         updateSavedComments();
         app.appendChild(renderActionBar());
 
@@ -955,6 +975,36 @@
         textarea.addEventListener('input', saveDraft);
         section.appendChild(textarea);
         return section;
+    }
+
+    function markDiagramError(pre) {
+        pre.classList.add('mermaid-error');
+        const message = document.createElement('div');
+        message.className = 'mermaid-error-message';
+        message.textContent = 'Mermaid diagram could not be rendered. Source:';
+        pre.before(message);
+    }
+
+    function renderDescriptionDiagrams(section) {
+        for (const code of section.querySelectorAll('pre > code.language-mermaid')) {
+            const pre = code.parentElement;
+            const source = code.textContent;
+            if (!window.mermaid) {
+                markDiagramError(pre);
+                continue;
+            }
+            const id = 'pr-diagram-' + (++diagramId);
+            window.mermaid.render(id, source).then(({ svg }) => {
+                if (!pre.isConnected) return;
+                const diagram = document.createElement('div');
+                diagram.className = 'pr-diagram';
+                diagram.innerHTML = svg;
+                pre.replaceWith(diagram);
+            }).catch(() => {
+                if (!pre.isConnected) return;
+                markDiagramError(pre);
+            });
+        }
     }
 
     function renderPrDescription() {
