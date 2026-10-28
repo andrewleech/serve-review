@@ -670,23 +670,24 @@ def install_claude_hook(port: int, global_: bool) -> None:
 
 @main.command("install-skill")
 def install_skill() -> None:
-    """Install the Claude Code skill to existing ~/.claude and ~/.omp homes.
+    """Install the skill to existing Claude Code and omp configuration homes.
 
-    The skill teaches Claude how to launch serve-review reviews correctly,
+    The skill teaches agents how to launch serve-review reviews correctly,
     including tool disambiguation and the agent launch pattern.
     """
     import importlib.resources
 
     skill_src = importlib.resources.files("serve_review").joinpath("skill")
     home = Path.home()
-    config_homes = [
-        config_home for config_home in (home / ".claude", home / ".omp") if config_home.is_dir()
+    destinations = [
+        (home / ".claude", home / ".claude" / "skills" / "serve-review"),
+        (home / ".omp", home / ".omp" / "agent" / "skills" / "serve-review"),
     ]
-    if not config_homes:
-        config_homes = [home / ".claude"]
+    destinations = [dest for config_home, dest in destinations if config_home.is_dir()]
+    if not destinations:
+        destinations = [home / ".claude" / "skills" / "serve-review"]
 
-    for config_home in config_homes:
-        dest = config_home / "skills" / "serve-review"
+    for dest in destinations:
         dest.mkdir(parents=True, exist_ok=True)
 
         for item in skill_src.iterdir():

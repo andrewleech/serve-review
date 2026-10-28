@@ -95,15 +95,15 @@ Prints a YAML snippet for `.pre-commit-config.yaml`. Then:
 pre-commit install --hook-type pre-push
 ```
 
-### Claude Code skill
+### Claude Code and omp skill
 
-Installs a skill that teaches Claude how to launch reviews correctly (tool disambiguation, agent launch pattern, scoping):
+Installs a skill that teaches agents how to launch reviews correctly (tool disambiguation, agent launch pattern, scoping):
 
 ```bash
 serve-review install-skill
 ```
 
-Installs the skill under each existing `~/.claude` and `~/.omp` configuration directory. If neither exists, it creates the Claude Code destination at `~/.claude/skills/serve-review/`.
+Installs the skill at `~/.claude/skills/serve-review/` if `~/.claude` exists, and at `~/.omp/agent/skills/serve-review/` if `~/.omp` exists. If neither exists, it creates the Claude Code destination.
 
 ### Claude Code hook
 

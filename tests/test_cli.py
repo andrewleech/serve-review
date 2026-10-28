@@ -98,13 +98,16 @@ def test_install_skill_to_existing_claude_and_omp_directories(
     result = CliRunner().invoke(cli.main, ["install-skill"])
 
     assert result.exit_code == 0, result.output
-    for home in (claude_home, omp_home):
-        installed = home / "skills" / "serve-review" / "SKILL.md"
+    for installed in (
+        claude_home / "skills" / "serve-review" / "SKILL.md",
+        omp_home / "agent" / "skills" / "serve-review" / "SKILL.md",
+    ):
         assert (
             installed.read_text()
             == (Path(__file__).parents[1] / "src/serve_review/skill/SKILL.md").read_text()
         )
         assert str(installed.parent) in result.output
+    assert not (omp_home / "skills" / "serve-review").exists()
 
 
 def test_install_skill_uses_omp_home_when_it_is_the_only_existing_home(
@@ -117,7 +120,10 @@ def test_install_skill_uses_omp_home_when_it_is_the_only_existing_home(
     result = CliRunner().invoke(cli.main, ["install-skill"])
 
     assert result.exit_code == 0, result.output
-    assert (omp_home / "skills" / "serve-review" / "SKILL.md").is_file()
+    installed = omp_home / "agent" / "skills" / "serve-review" / "SKILL.md"
+    assert installed.is_file()
+    assert str(installed.parent) in result.output
+    assert not (omp_home / "skills" / "serve-review").exists()
     assert not (tmp_path / ".claude").exists()
 
 
